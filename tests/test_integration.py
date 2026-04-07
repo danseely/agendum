@@ -9,13 +9,13 @@ from pathlib import Path
 async def test_table_displays_grouped_tasks(tmp_db: Path) -> None:
     init_db(tmp_db)
 
-    add_task(tmp_db, title="fix: concurrent mode bugs", source="pr_authored", status="awaiting review",
-             project="react", gh_number=412, gh_url="https://github.com/facebook/react/pull/412")
-    add_task(tmp_db, title="feat: new hook API", source="pr_review", status="review requested",
-             project="jest", gh_number=89, gh_url="https://github.com/facebook/jest/pull/89",
-             gh_author="sjohnson", gh_author_name="Sarah")
+    add_task(tmp_db, title="fix: dashboard refresh", source="pr_authored", status="awaiting review",
+             project="example-repo", gh_number=412, gh_url="https://github.com/example-org/example-repo/pull/412")
+    add_task(tmp_db, title="feat: keyboard shortcuts", source="pr_review", status="review requested",
+             project="example-tool", gh_number=89, gh_url="https://github.com/example-org/example-tool/pull/89",
+             gh_author="reviewer", gh_author_name="Reviewer")
     add_task(tmp_db, title="add missing type exports", source="issue", status="open",
-             project="react", gh_number=98, gh_url="https://github.com/facebook/react/issues/98")
+             project="example-repo", gh_number=98, gh_url="https://github.com/example-org/example-repo/issues/98")
     add_task(tmp_db, title="update docs", source="manual", status="active")
 
     config = AgendumConfig(orgs=[], sync_interval=9999)

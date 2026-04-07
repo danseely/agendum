@@ -22,8 +22,10 @@ def derive_authored_pr_status(
     state: str,
     has_review_requests: bool = False,
 ) -> str:
-    if state in ("MERGED", "CLOSED"):
+    if state == "MERGED":
         return "merged"
+    if state == "CLOSED":
+        return "closed"
     if is_draft:
         return "draft"
     if review_decision == "APPROVED":

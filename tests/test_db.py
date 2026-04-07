@@ -36,16 +36,16 @@ def test_add_github_task(tmp_db: Path) -> None:
         title="fix: heartbeat failures",
         source="pr_authored",
         status="awaiting review",
-        project="react",
-        gh_repo="facebook/react",
-        gh_url="https://github.com/facebook/react/pull/412",
+        project="example-repo",
+        gh_repo="example-org/example-repo",
+        gh_url="https://github.com/example-org/example-repo/pull/412",
         gh_number=412,
         tags='["bugfix"]',
     )
     tasks = get_active_tasks(tmp_db)
     assert len(tasks) == 1
     assert tasks[0]["gh_number"] == 412
-    assert tasks[0]["project"] == "react"
+    assert tasks[0]["project"] == "example-repo"
 
 
 def test_update_task(tmp_db: Path) -> None:

@@ -147,7 +147,7 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool]:
                 incoming_tasks.append({
                     "title": "",
                     "source": "pr_authored",
-                    "status": "merged",
+                    "status": "closed",
                     "gh_url": pr["url"],
                     "gh_number": pr["number"],
                     "project": short_name,

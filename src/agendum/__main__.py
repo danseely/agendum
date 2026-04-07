@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
-from pathlib import Path
 
 from agendum.config import CONFIG_DIR, CONFIG_PATH, DB_PATH, DEFAULT_CONFIG, ensure_config
 
@@ -35,14 +35,15 @@ def first_run_setup() -> None:
 
     if not CONFIG_PATH.exists():
         print(f"Creating config at {CONFIG_PATH}")
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-        org = input("GitHub org to scan (e.g. 'facebook'): ").strip()
+        org = input("GitHub org to scan (e.g. 'example-org'): ").strip()
         if org:
-            config_text = DEFAULT_CONFIG.replace('orgs = []', f'orgs = ["{org}"]')
+            config_text = DEFAULT_CONFIG.replace("orgs = []", f"orgs = [{json.dumps(org)}]")
         else:
             config_text = DEFAULT_CONFIG
         CONFIG_PATH.write_text(config_text)
+        CONFIG_PATH.chmod(0o600)
         print(f"Config written to {CONFIG_PATH}")
         print()
 

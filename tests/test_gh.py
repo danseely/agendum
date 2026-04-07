@@ -33,7 +33,7 @@ def test_authored_pr_merged() -> None:
 
 
 def test_authored_pr_closed() -> None:
-    assert derive_authored_pr_status(is_draft=False, review_decision=None, state="CLOSED") == "merged"
+    assert derive_authored_pr_status(is_draft=False, review_decision=None, state="CLOSED") == "closed"
 
 
 def test_review_pr_requested() -> None:
@@ -61,12 +61,12 @@ def test_issue_closed() -> None:
 
 
 def test_parse_author_first_name() -> None:
-    assert parse_author_first_name("Sarah Johnson") == "Sarah"
-    assert parse_author_first_name("Mike") == "Mike"
+    assert parse_author_first_name("Example Reviewer") == "Example"
+    assert parse_author_first_name("Reviewer") == "Reviewer"
     assert parse_author_first_name(None) is None
     assert parse_author_first_name("") is None
 
 
 def test_extract_repo_short_name() -> None:
-    assert extract_repo_short_name("facebook/react") == "react"
+    assert extract_repo_short_name("example-org/example-repo") == "example-repo"
     assert extract_repo_short_name("org/repo") == "repo"

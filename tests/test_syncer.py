@@ -1,4 +1,10 @@
-from agendum.syncer import diff_tasks, SyncResult
+from pathlib import Path
+
+import pytest
+
+from agendum.config import AgendumConfig
+from agendum.db import add_task, find_task_by_gh_url, init_db
+from agendum.syncer import diff_tasks, run_sync
 
 
 def test_diff_detects_new_task() -> None:
@@ -69,3 +75,60 @@ def test_diff_title_change_without_status_change() -> None:
     result = diff_tasks(existing, incoming)
     assert len(result.to_update) == 1
     assert result.to_update[0]["title"] == "New title"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_marks_closed_authored_pr_closed(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/12"
+    add_task(tmp_db, title="Old PR", source="pr_authored", status="open", gh_url=url)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "openIssues": {"nodes": []},
+                    "closedIssues": {"nodes": []},
+                    "authoredPRs": {"nodes": []},
+                    "mergedPRs": {"nodes": []},
+                    "closedPRs": {
+                        "nodes": [
+                            {
+                                "number": 12,
+                                "url": url,
+                                "state": "CLOSED",
+                                "author": {"login": gh_user},
+                            }
+                        ],
+                    },
+                },
+            },
+        }
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+        return []
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert attention is False
+    assert task is not None
+    assert task["status"] == "closed"

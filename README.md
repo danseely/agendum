@@ -38,7 +38,7 @@ Type in the bottom input row to create a manual task.
 
 ```toml
 [github]
-orgs = ["your-org"]
+orgs = ["example-org"]
 exclude_repos = []
 
 [sync]
