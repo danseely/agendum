@@ -1,8 +1,11 @@
 import json
+import pytest
+
 from agendum.gh import (
     derive_authored_pr_status,
     derive_review_pr_status,
     derive_issue_status,
+    fetch_review_detail,
     parse_author_first_name,
     extract_repo_short_name,
 )
@@ -70,3 +73,39 @@ def test_parse_author_first_name() -> None:
 def test_extract_repo_short_name() -> None:
     assert extract_repo_short_name("example-org/example-repo") == "example-repo"
     assert extract_repo_short_name("org/repo") == "repo"
+
+
+@pytest.mark.asyncio
+async def test_fetch_review_detail_uses_valid_author_name_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "author": {
+                                "login": "reviewer",
+                                "name": "Review Person",
+                            },
+                        },
+                    },
+                },
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    result = await fetch_review_detail("example-org", "example-repo", 34, "current-user")
+
+    assert result["data"]["repository"]["pullRequest"]["author"]["name"] == "Review Person"
+    call = calls[0]
+    query_arg = next(arg for arg in call if arg.startswith("query="))
+    assert "$user" not in query_arg
+    assert "-F" in call
+    assert "user=current-user" not in call
+    assert "... on User" in query_arg
