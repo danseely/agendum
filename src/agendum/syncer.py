@@ -248,19 +248,31 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
                 update_task(db_path, existing_task["id"], status=item["status"])
                 changes += 1
             continue
-        add_task(
-            db_path,
-            title=item["title"],
-            source=item["source"],
-            status=item["status"],
-            project=item.get("project"),
-            gh_repo=item.get("gh_repo"),
-            gh_url=item.get("gh_url"),
-            gh_number=item.get("gh_number"),
-            gh_author=item.get("gh_author"),
-            gh_author_name=item.get("gh_author_name"),
-            tags=item.get("tags"),
-        )
+        existing_task = find_task_by_gh_url(db_path, item["gh_url"]) if item.get("gh_url") else None
+        if existing_task:
+            update_fields = {
+                k: item[k] for k in ("title", "source", "status", "project",
+                                      "gh_repo", "gh_number", "gh_author",
+                                      "gh_author_name", "tags")
+                if item.get(k) is not None
+            }
+            update_fields["seen"] = 0
+            update_fields["last_changed_at"] = now
+            update_task(db_path, existing_task["id"], **update_fields)
+        else:
+            add_task(
+                db_path,
+                title=item["title"],
+                source=item["source"],
+                status=item["status"],
+                project=item.get("project"),
+                gh_repo=item.get("gh_repo"),
+                gh_url=item.get("gh_url"),
+                gh_number=item.get("gh_number"),
+                gh_author=item.get("gh_author"),
+                gh_author_name=item.get("gh_author_name"),
+                tags=item.get("tags"),
+            )
         changes += 1
         if item.get("source") == "pr_review" and item.get("status") == "review requested":
             attention = True
