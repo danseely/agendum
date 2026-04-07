@@ -5,12 +5,25 @@ A terminal dashboard for tracking your GitHub PRs, issues, and tasks. Runs persi
 ## Install
 
 ```bash
-pip install -e .
+uv tool install --editable /path/to/agendum
 ```
 
 Requires:
 - Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
 - [gh CLI](https://cli.github.com/) installed and authenticated (`gh auth login`)
+
+If `agendum` is not found after installing, add uv's tool directory to your shell:
+
+```bash
+uv tool update-shell
+```
+
+If you previously installed agendum with pip, remove that install first:
+
+```bash
+python -m pip uninstall agendum
+```
 
 ## Usage
 
