@@ -33,6 +33,43 @@ agendum
 
 On first run, you'll be prompted to configure your GitHub org. Config lives at `~/.agendum/config.toml`.
 
+## MCP Server
+
+Install agendum as a tool:
+
+```bash
+uv tool install --editable /path/to/agendum
+```
+
+Claude Desktop MCP config:
+
+```json
+{
+  "mcpServers": {
+    "agendum": {
+      "command": "agendum-mcp"
+    }
+  }
+}
+```
+
+If you need to point at a specific executable, use an absolute path:
+
+```json
+{
+  "mcpServers": {
+    "agendum": {
+      "command": "/path/to/agendum-mcp"
+    }
+  }
+}
+```
+
+Examples:
+- "Create a new agendum task called follow up on telemetry PR"
+- "Are there any open PRs waiting on my review?"
+- "Did Alex review my API PR yet?"
+
 ## Keybindings
 
 | Key | Action |
