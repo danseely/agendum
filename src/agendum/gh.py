@@ -151,12 +151,17 @@ query($owner: String!, $name: String!, $user: String!) {
 """
 
 REVIEW_QUERY = """
-query($owner: String!, $name: String!, $number: Int!, $user: String!) {
+query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number title url state createdAt isDraft
       headRefName
-      author { login name }
+      author {
+        login
+        ... on User {
+          name
+        }
+      }
       commits(last: 1) { nodes { commit { committedDate } } }
       reviews(first: 50) {
         nodes { author { login } submittedAt state }
@@ -193,7 +198,6 @@ async def fetch_review_detail(owner: str, name: str, number: int, gh_user: str) 
         "-F", f"owner={owner}",
         "-F", f"name={name}",
         "-F", f"number={number}",
-        "-F", f"user={gh_user}",
     )
     if not result:
         return {}
