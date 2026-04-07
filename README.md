@@ -33,6 +33,69 @@ agendum
 
 On first run, you'll be prompted to configure your GitHub org. Config lives at `~/.agendum/config.toml`.
 
+## MCP Server
+
+For local development, register the MCP server from this checkout. This avoids a separate tool install and keeps the MCP server using the code in your working tree.
+
+Codex CLI:
+
+```bash
+codex mcp add agendum -- "$(which uv)" run --directory /path/to/agendum agendum-mcp
+```
+
+Claude Code:
+
+```bash
+claude mcp add agendum -- "$(which uv)" run --directory /path/to/agendum agendum-mcp
+```
+
+If your MCP client does not have an add command, configure the stdio server manually:
+
+```json
+{
+  "mcpServers": {
+    "agendum": {
+      "command": "/path/to/uv",
+      "args": ["run", "--directory", "/path/to/agendum", "agendum-mcp"]
+    }
+  }
+}
+```
+
+Use the absolute path from `which uv` for `command`, and the absolute path to this checkout for `--directory`.
+
+For a global command install instead:
+
+```bash
+uv tool install --reinstall --editable /path/to/agendum
+```
+
+Then register the installed executable:
+
+```bash
+codex mcp add agendum -- agendum-mcp
+claude mcp add agendum -- agendum-mcp
+```
+
+Or configure it manually:
+
+```json
+{
+  "mcpServers": {
+    "agendum": {
+      "command": "agendum-mcp"
+    }
+  }
+}
+```
+
+If Claude can't find `agendum-mcp`, use the absolute path from `which agendum-mcp`.
+
+Examples:
+- "Create a new agendum task called follow up on telemetry PR"
+- "Are there any open PRs waiting on my review?"
+- "Did Alex review my API PR yet?"
+
 ## Keybindings
 
 | Key | Action |
