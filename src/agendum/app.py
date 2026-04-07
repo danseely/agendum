@@ -133,6 +133,9 @@ class AgendumApp(App):
         self._config = config  # resolved in on_mount if None
         self._task_rows: list[dict | None] = []  # None = section header
         self._last_sync: datetime | None = None
+        self._sync_in_progress = False
+        self._sync_error: str | None = None
+        self._sync_spinner_frame = 0
         self._app_focused = True
         self._modal_task: dict | None = None
 
@@ -185,6 +188,7 @@ class AgendumApp(App):
         # Run initial sync immediately, then on interval
         self._start_sync()
         self.set_interval(self._config.sync_interval, self._start_sync)
+        self.set_interval(0.25, self._tick_initial_sync_spinner)
         self.set_interval(10, self._update_status_bar)
 
     def on_resize(self) -> None:
@@ -246,36 +250,34 @@ class AgendumApp(App):
                 table.add_row(dot, status_text, title, author, repo, link)
                 self._task_rows.append(task)
 
-        # Update status bar
-        total = len(tasks)
-        sync_info = ""
-        if self._last_sync:
-            age = (datetime.now(timezone.utc) - self._last_sync).total_seconds()
-            if age < 60:
-                sync_info = f" | synced {int(age)}s ago"
-            else:
-                sync_info = f" | synced {int(age // 60)}m ago"
-        bar = self.query_one("#status-bar", Static)
-        bar.update(f" agendum — {total} tasks{sync_info}")
+        self._update_status_bar()
 
     def _update_status_bar(self) -> None:
-        """Update the status bar with current sync age."""
+        """Update the status bar with current sync state."""
         tasks = get_active_tasks(self.db_path)
         unseen = sum(1 for t in tasks if not t["seen"])
-        sync_ago = ""
-        if self._last_sync:
-            delta = int((datetime.now(timezone.utc) - self._last_sync).total_seconds())
-            if delta < 60:
-                sync_ago = f"synced {delta}s ago"
-            else:
-                sync_ago = f"synced {delta // 60}m ago"
-        else:
-            sync_ago = "not yet synced"
         total = len(tasks)
         unseen_str = f" — {unseen} new" if unseen else ""
+        sync_status = self._format_sync_status()
         self.query_one("#status-bar", Static).update(
-            f"agendum — {sync_ago} — {total} tasks{unseen_str}"
+            f"agendum — {sync_status} — {total} tasks{unseen_str}"
         )
+
+    def _format_sync_status(self) -> str:
+        if self._sync_error:
+            return f"🟡 sync status ({self._sync_error})"
+        if self._last_sync:
+            return "🟢 sync status"
+        if self._sync_in_progress:
+            frame = "|/-\\"[self._sync_spinner_frame % 4]
+            return f"initial sync starting {frame}"
+        return "initial sync pending"
+
+    def _tick_initial_sync_spinner(self) -> None:
+        if not self._sync_in_progress or self._last_sync is not None or self._sync_error:
+            return
+        self._sync_spinner_frame += 1
+        self._update_status_bar()
 
     # ── navigation ───────────────────────────────────────────────────
 
@@ -358,10 +360,14 @@ class AgendumApp(App):
 
     def _start_sync(self) -> None:
         """Kick off a sync in a background worker."""
-        self.query_one("#status-bar", Static).update("agendum — syncing…")
+        if self._sync_in_progress:
+            return
+        self._sync_in_progress = True
+        self._sync_spinner_frame = 0
+        self._update_status_bar()
         self.run_worker(self._do_sync(), exclusive=True, group="sync")
 
-    async def _do_sync(self) -> tuple[int, bool]:
+    async def _do_sync(self) -> tuple[int, bool, str | None]:
         """Run sync in a worker thread — does not touch UI."""
         return await run_sync(self._db_path, self._config)
 
@@ -369,16 +375,28 @@ class AgendumApp(App):
         """Handle sync worker completion."""
         if event.worker.group != "sync":
             return
+        self._sync_in_progress = False
         if event.state != WorkerState.SUCCESS:
             if event.state == WorkerState.ERROR:
                 log.exception("Sync failed: %s", event.worker.error)
+                self._sync_error = self._format_sync_error(event.worker.error)
+                self._update_status_bar()
             return
-        changes, attention = event.worker.result
+        changes, attention, error = event.worker.result
         self._last_sync = datetime.now(timezone.utc)
+        self._sync_error = error
         self.refresh_table()
         self._update_status_bar()
         if attention and not self._app_focused:
             self.bell()
+
+    def _format_sync_error(self, error: BaseException | None) -> str:
+        if error is None:
+            return "unknown sync error"
+        message = str(error).strip()
+        if not message:
+            return error.__class__.__name__
+        return message
 
     def action_force_sync(self) -> None:
         self._start_sync()

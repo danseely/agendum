@@ -71,19 +71,19 @@ def diff_tasks(existing: list[dict], incoming: list[dict]) -> SyncResult:
     return result
 
 
-async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool]:
+async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str | None]:
     """
     Execute a full sync cycle.
-    Returns (changes_count, has_attention_items).
+    Returns (changes_count, has_attention_items, error_message).
     """
     if not config.orgs and not config.repos:
         log.warning("No orgs or repos configured — skipping sync")
-        return 0, False
+        return 0, False, None
 
     gh_user = await gh.get_gh_username()
     if not gh_user:
         log.error("Could not determine GitHub username")
-        return 0, False
+        return 0, False, "gh credentials expired"
 
     if config.repos:
         repos = set(config.repos)
@@ -303,4 +303,4 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool]:
                     attention = True
 
     log.info("Sync complete: %d changes, attention=%s", changes, attention)
-    return changes, attention
+    return changes, attention, None
