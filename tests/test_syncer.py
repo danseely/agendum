@@ -122,7 +122,7 @@ async def test_run_sync_marks_closed_authored_pr_closed(tmp_db: Path, monkeypatc
     monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
 
-    changes, attention = await run_sync(
+    changes, attention, error = await run_sync(
         tmp_db,
         AgendumConfig(repos=["example-org/example-repo"]),
     )
@@ -130,5 +130,27 @@ async def test_run_sync_marks_closed_authored_pr_closed(tmp_db: Path, monkeypatc
     task = find_task_by_gh_url(tmp_db, url)
     assert changes == 1
     assert attention is False
+    assert error is None
     assert task is not None
     assert task["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_reports_missing_gh_auth(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+
+    async def fake_get_gh_username() -> str:
+        return ""
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    assert changes == 0
+    assert attention is False
+    assert error == "gh credentials expired"
