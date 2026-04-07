@@ -7,6 +7,7 @@ from types import ModuleType
 from typing import Any
 
 from agendum.config import DB_PATH
+from agendum.db import init_db
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -34,6 +35,10 @@ def _task_api() -> ModuleType:
 
 def _gh_review() -> ModuleType:
     return importlib.import_module("agendum.gh_review")
+
+
+def _initialize_storage() -> None:
+    init_db(DB_PATH)
 
 
 def _task_or_error(task_id: int) -> dict[str, Any]:
@@ -185,4 +190,5 @@ async def get_pr_review_status(
 
 
 def main() -> None:
+    _initialize_storage()
     mcp.run(transport="stdio")

@@ -130,3 +130,19 @@ def test_main_runs_stdio(monkeypatch) -> None:
     mcp_server.main()
 
     assert calls == ["stdio"]
+
+
+def test_main_initializes_database_before_serving_tools(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / ".agendum" / "agendum.db"
+    served_results = []
+
+    def fake_run(transport="stdio"):
+        served_results.append(mcp_server.list_tasks())
+
+    monkeypatch.setattr(mcp_server, "DB_PATH", db_path)
+    monkeypatch.setattr(mcp_server.mcp, "run", fake_run)
+
+    mcp_server.main()
+
+    assert served_results == [[]]
+    assert db_path.exists()

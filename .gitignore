@@ -10,6 +10,7 @@ venv/
 .env
 .env.*
 !.env.example
+.python-version
 *.sqlite
 *.sqlite3
 *.db
