@@ -102,7 +102,7 @@ class AgendumApp(App):
         scrollbar-size: 0 0;
     }
     DataTable > .datatable--cursor {
-        background: #2a2a3a;
+        background: #363660;
     }
     #create-input {
         dock: bottom;
