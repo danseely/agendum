@@ -47,8 +47,8 @@ def format_link(source: str, gh_number: int | None, gh_url: str | None) -> Text:
     """Format a clickable-style link column value."""
     if gh_number is not None:
         prefix = "PR" if source.startswith("pr") else "Issue"
-        return Text(f"{prefix} #{gh_number}", style="bold #60a5fa")
-    return Text("—", style="#555555")
+        return Text(f"{prefix} #{gh_number}", style="bold #60a5fa", justify="right")
+    return Text("—", style="#555555", justify="right")
 
 
 def build_table_rows(tasks: list[dict]) -> list[tuple[str, list[dict]]]:

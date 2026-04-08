@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
+import textwrap
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,7 +103,7 @@ class AgendumApp(App):
         scrollbar-size: 0 0;
     }
     DataTable > .datatable--cursor {
-        background: #2a2a3a;
+        background: #363660;
     }
     #create-input {
         dock: bottom;
@@ -205,6 +206,7 @@ class AgendumApp(App):
 
     def refresh_table(self) -> None:
         table = self.query_one(DataTable)
+        saved_row = table.cursor_row
         table.clear()
         self._task_rows.clear()
 
@@ -234,8 +236,8 @@ class AgendumApp(App):
                 dot = Text("●", style="#f87171") if not seen else Text(" ")
                 status_text = styled_status(task.get("status", ""))
                 title = task.get("title", "")
-                if len(title) > title_w:
-                    title = title[: title_w - 1] + "…"
+                title_lines = textwrap.wrap(title, width=title_w) or [title]
+                title = "\n".join(title_lines)
                 author = task.get("gh_author_name") or task.get("gh_author") or ""
                 if len(author) > self._COL_AUTHOR - 1:
                     author = author[: self._COL_AUTHOR - 2] + "…"
@@ -247,8 +249,11 @@ class AgendumApp(App):
                     task.get("gh_number"),
                     task.get("gh_url"),
                 )
-                table.add_row(dot, status_text, title, author, repo, link)
+                table.add_row(dot, status_text, title, author, repo, link, height=len(title_lines))
                 self._task_rows.append(task)
+
+        if saved_row > 0 and table.row_count > 0:
+            table.move_cursor(row=min(saved_row, table.row_count - 1))
 
         self._update_status_bar()
 
