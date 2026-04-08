@@ -205,6 +205,7 @@ class AgendumApp(App):
 
     def refresh_table(self) -> None:
         table = self.query_one(DataTable)
+        saved_row = table.cursor_row
         table.clear()
         self._task_rows.clear()
 
@@ -249,6 +250,9 @@ class AgendumApp(App):
                 )
                 table.add_row(dot, status_text, title, author, repo, link)
                 self._task_rows.append(task)
+
+        if saved_row > 0 and table.row_count > 0:
+            table.move_cursor(row=min(saved_row, table.row_count - 1))
 
         self._update_status_bar()
 
