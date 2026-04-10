@@ -206,10 +206,10 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
 
         new_commits_since = False
         if user_has_reviewed:
-            last_review_time = max(r.get("submittedAt", "") for r in user_reviews)
+            last_review_time = max((r.get("submittedAt") or "" for r in user_reviews), default="")
             last_commit_nodes = pr_detail.get("commits", {}).get("nodes", [])
             if last_commit_nodes:
-                last_commit_time = last_commit_nodes[0].get("commit", {}).get("committedDate", "")
+                last_commit_time = (last_commit_nodes[0].get("commit", {}).get("committedDate") or "")
                 new_commits_since = last_commit_time > last_review_time
 
         status = gh.derive_review_pr_status(
