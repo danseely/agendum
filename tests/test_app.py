@@ -234,6 +234,25 @@ def test_retry_sync_skipped_while_sync_in_progress(tmp_db) -> None:
     assert app._sync_in_progress is True  # unchanged
 
 
+def test_force_sync_clears_suspended_state(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 5
+    app._last_sync = datetime.now(timezone.utc)
+    app._last_sync_mono = time.monotonic()
+    app._last_sync_wall = time.time()
+
+    worker_calls: list = []
+    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    app.action_force_sync()
+
+    assert app._suspended is False
+    assert app._wake_retry_count == 0
+    assert len(worker_calls) == 1
+
+
 def test_wake_retry_gives_up_after_max_retries(tmp_db) -> None:
     """After exceeding max retries, fall back to normal sync."""
     app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
@@ -244,9 +263,13 @@ def test_wake_retry_gives_up_after_max_retries(tmp_db) -> None:
     app.set_timer = lambda delay, cb: timer_calls.append((delay, cb))  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
+    status_bar_calls: list = []
+    app._update_status_bar = lambda: status_bar_calls.append(1)  # type: ignore[assignment]
+
     app._handle_wake_retry_failure()
 
     # Should give up, not schedule another retry
     assert app._suspended is False
     assert app._wake_retry_count == 0
     assert len(timer_calls) == 0
+    assert len(status_bar_calls) == 1  # status bar refreshed on exhaustion

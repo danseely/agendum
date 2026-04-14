@@ -432,6 +432,7 @@ class AgendumApp(App):
             log.warning("Wake retries exhausted — resuming normal sync")
             self._suspended = False
             self._wake_retry_count = 0
+            self._update_status_bar()
             return
         delay = min(2 * (2 ** (self._wake_retry_count - 1)), 30)
         log.info(
@@ -484,6 +485,10 @@ class AgendumApp(App):
         return message
 
     def action_force_sync(self) -> None:
+        if self._suspended:
+            self._suspended = False
+            self._wake_retry_count = 0
+            log.info("Force sync — clearing suspended state")
         self._start_sync()
 
     # ── focus tracking ───────────────────────────────────────────────
