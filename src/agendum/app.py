@@ -414,11 +414,28 @@ class AgendumApp(App):
         self.run_worker(self._do_sync(), exclusive=True, group="sync")
 
     def _retry_sync_after_wake(self) -> None:
-        """Attempt a sync as part of the wake retry sequence (Task 2)."""
+        """Attempt a sync as part of the wake retry sequence."""
         self._sync_in_progress = True
         self._sync_spinner_frame = 0
         self._update_status_bar()
         self.run_worker(self._do_sync(), exclusive=True, group="sync")
+
+    def _handle_wake_retry_failure(self) -> None:
+        """Schedule the next wake-retry attempt with exponential backoff."""
+        self._wake_retry_count += 1
+        delay = min(2 * (2 ** (self._wake_retry_count - 1)), 30)
+        log.info(
+            "Wake retry %d failed — retrying in %ds",
+            self._wake_retry_count, delay,
+        )
+        self._update_status_bar()
+        self.set_timer(delay, self._retry_sync_after_wake)
+
+    def _handle_wake_retry_success(self) -> None:
+        """Clear suspended state after a successful wake-retry sync."""
+        log.info("Wake retry succeeded — resuming normal sync")
+        self._suspended = False
+        self._wake_retry_count = 0
 
     async def _do_sync(self) -> tuple[int, bool, str | None]:
         """Run sync in a worker thread — does not touch UI."""
@@ -433,11 +450,16 @@ class AgendumApp(App):
             if event.state == WorkerState.ERROR:
                 log.exception("Sync failed: %s", event.worker.error)
                 self._sync_error = self._format_sync_error(event.worker.error)
-                self._update_status_bar()
+                if self._suspended:
+                    self._handle_wake_retry_failure()
+                else:
+                    self._update_status_bar()
             return
         changes, attention, error = event.worker.result
         self._last_sync = datetime.now(timezone.utc)
         self._sync_error = error
+        if self._suspended:
+            self._handle_wake_retry_success()
         self.refresh_table()
         self._update_status_bar()
         if attention and not self._app_focused:

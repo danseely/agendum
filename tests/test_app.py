@@ -119,3 +119,87 @@ def test_first_sync_not_detected_as_sleep(tmp_db) -> None:
 
     assert app._suspended is False
     assert len(worker_calls) == 1
+
+
+# ── retry-with-backoff after wake ────────────────────────────────
+
+
+def test_wake_retry_attempts_sync_immediately(tmp_db) -> None:
+    """After sleep detection, _retry_sync_after_wake should launch a
+    sync worker immediately (retry 0 = no delay)."""
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 0
+
+    worker_calls: list = []
+    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    app._retry_sync_after_wake()
+
+    assert app._sync_in_progress is True
+    assert len(worker_calls) == 1
+
+
+def test_wake_retry_backs_off_on_failure(tmp_db) -> None:
+    """When a wake-retry sync fails, schedule the next attempt with
+    exponential backoff."""
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 0
+
+    timer_calls: list[tuple] = []
+    app.set_timer = lambda delay, cb: timer_calls.append((delay, cb))  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    # Simulate sync failure during wake retry
+    app._handle_wake_retry_failure()
+
+    assert app._wake_retry_count == 1
+    assert app._suspended is True
+    assert len(timer_calls) == 1
+    # First backoff: 2 * 2^0 = 2s
+    assert timer_calls[0][0] == 2
+
+
+def test_wake_retry_backoff_caps_at_30s(tmp_db) -> None:
+    """Backoff delay should cap at 30 seconds."""
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 10  # 2 * 2^10 = 2048, should be capped
+
+    timer_calls: list[tuple] = []
+    app.set_timer = lambda delay, cb: timer_calls.append((delay, cb))  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    app._handle_wake_retry_failure()
+
+    assert timer_calls[0][0] == 30
+
+
+def test_wake_retry_success_clears_suspended(tmp_db) -> None:
+    """When a wake-retry sync succeeds, clear suspended state."""
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 3
+
+    app._handle_wake_retry_success()
+
+    assert app._suspended is False
+    assert app._wake_retry_count == 0
+
+
+def test_wake_retry_backoff_sequence(tmp_db) -> None:
+    """Verify the full backoff sequence: 2, 4, 8, 16, 30, 30."""
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 0
+
+    timer_calls: list[tuple] = []
+    app.set_timer = lambda delay, cb: timer_calls.append((delay, cb))  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    expected_delays = [2, 4, 8, 16, 30, 30]
+    for expected in expected_delays:
+        app._handle_wake_retry_failure()
+        assert timer_calls[-1][0] == expected
