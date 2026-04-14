@@ -380,6 +380,9 @@ class AgendumApp(App):
         the machine was asleep — enter suspended state and start
         retry-with-backoff instead of syncing immediately.
         """
+        if self._suspended:
+            return  # wake-retry sequence owns sync scheduling
+
         now_mono = time.monotonic()
         now_wall = time.time()
         mono_elapsed = now_mono - self._last_sync_mono
@@ -415,6 +418,8 @@ class AgendumApp(App):
 
     def _retry_sync_after_wake(self) -> None:
         """Attempt a sync as part of the wake retry sequence."""
+        if self._sync_in_progress:
+            return
         self._sync_in_progress = True
         self._sync_spinner_frame = 0
         self._update_status_bar()

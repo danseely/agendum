@@ -205,6 +205,35 @@ def test_wake_retry_backoff_sequence(tmp_db) -> None:
         assert timer_calls[-1][0] == expected
 
 
+def test_start_sync_skipped_while_suspended(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._last_sync = datetime.now(timezone.utc)
+
+    worker_calls: list = []
+    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    app._start_sync()
+
+    assert len(worker_calls) == 0
+
+
+def test_retry_sync_skipped_while_sync_in_progress(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._sync_in_progress = True
+
+    worker_calls: list = []
+    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    app._retry_sync_after_wake()
+
+    assert len(worker_calls) == 0
+    assert app._sync_in_progress is True  # unchanged
+
+
 def test_wake_retry_gives_up_after_max_retries(tmp_db) -> None:
     """After exceeding max retries, fall back to normal sync."""
     app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
