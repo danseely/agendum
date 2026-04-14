@@ -418,7 +418,7 @@ class AgendumApp(App):
 
     def _retry_sync_after_wake(self) -> None:
         """Attempt a sync as part of the wake retry sequence."""
-        if self._sync_in_progress:
+        if not self._suspended or self._sync_in_progress:
             return
         self._sync_in_progress = True
         self._sync_spinner_frame = 0

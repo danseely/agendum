@@ -253,6 +253,21 @@ def test_force_sync_clears_suspended_state(tmp_db) -> None:
     assert len(worker_calls) == 1
 
 
+def test_stale_retry_timer_is_noop_after_force_sync(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = False  # force sync already cleared this
+    app._wake_retry_count = 0
+
+    worker_calls: list = []
+    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    # Simulate an orphaned backoff timer firing after suspended was cleared
+    app._retry_sync_after_wake()
+
+    assert len(worker_calls) == 0
+
+
 def test_wake_retry_gives_up_after_max_retries(tmp_db) -> None:
     """After exceeding max retries, fall back to normal sync."""
     app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
