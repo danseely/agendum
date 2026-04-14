@@ -6,6 +6,7 @@ import atexit
 import logging
 import sys
 import textwrap
+import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -139,6 +140,10 @@ class AgendumApp(App):
         self._sync_spinner_frame = 0
         self._app_focused = True
         self._modal_task: dict | None = None
+        self._last_sync_mono: float = time.monotonic()
+        self._last_sync_wall: float = time.time()
+        self._suspended = False
+        self._wake_retry_count: int = 0
 
     @property
     def db_path(self) -> Path:
@@ -269,6 +274,8 @@ class AgendumApp(App):
         )
 
     def _format_sync_status(self) -> str:
+        if self._suspended:
+            return "💤 sync suspended (waking up…)"
         if self._sync_error:
             return f"🟡 sync status ({self._sync_error})"
         if self._last_sync:
@@ -364,9 +371,50 @@ class AgendumApp(App):
     # ── sync ─────────────────────────────────────────────────────────
 
     def _start_sync(self) -> None:
-        """Kick off a sync in a background worker."""
+        """Kick off a sync in a background worker.
+
+        Detects system sleep by comparing wall-clock drift against
+        monotonic-clock drift.  On macOS, ``time.monotonic()`` does not
+        advance during system sleep while ``time.time()`` does.  If
+        wall-clock time jumped significantly more than monotonic time,
+        the machine was asleep — enter suspended state and start
+        retry-with-backoff instead of syncing immediately.
+        """
+        now_mono = time.monotonic()
+        now_wall = time.time()
+        mono_elapsed = now_mono - self._last_sync_mono
+        wall_elapsed = now_wall - self._last_sync_wall
+        interval = self._config.sync_interval if self._config else 60
+
+        # Drift = how much more the wall clock advanced than monotonic.
+        # On macOS sleep this equals the sleep duration.
+        drift = wall_elapsed - mono_elapsed
+
+        if drift > interval and self._last_sync is not None:
+            log.info(
+                "Sleep detected (%.0fs wall drift) — starting sync retry",
+                drift,
+            )
+            self._last_sync_mono = now_mono
+            self._last_sync_wall = now_wall
+            self._suspended = True
+            self._wake_retry_count = 0
+            self._update_status_bar()
+            self._retry_sync_after_wake()
+            return
+
+        self._last_sync_mono = now_mono
+        self._last_sync_wall = now_wall
+
         if self._sync_in_progress:
             return
+        self._sync_in_progress = True
+        self._sync_spinner_frame = 0
+        self._update_status_bar()
+        self.run_worker(self._do_sync(), exclusive=True, group="sync")
+
+    def _retry_sync_after_wake(self) -> None:
+        """Attempt a sync as part of the wake retry sequence (Task 2)."""
         self._sync_in_progress = True
         self._sync_spinner_frame = 0
         self._update_status_bar()
