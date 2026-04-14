@@ -1,7 +1,10 @@
 import time
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
+from textual.worker import Worker, WorkerState
+
 from agendum.app import AgendumApp
 from agendum.config import AgendumConfig
 
@@ -288,3 +291,87 @@ def test_wake_retry_gives_up_after_max_retries(tmp_db) -> None:
     assert app._wake_retry_count == 0
     assert len(timer_calls) == 0
     assert len(status_bar_calls) == 1  # status bar refreshed on exhaustion
+
+
+# ── on_worker_state_changed integration ──────────────────────────
+
+
+def _make_worker_event(state: WorkerState, group: str = "sync", error: BaseException | None = None, result=None):
+    worker = MagicMock(spec=Worker)
+    worker.group = group
+    worker.error = error
+    worker.result = result
+    event = MagicMock(spec=Worker.StateChanged)
+    event.worker = worker
+    event.state = state
+    return event
+
+
+def test_worker_error_while_suspended_triggers_retry(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 2
+    app._sync_in_progress = True
+
+    timer_calls: list[tuple] = []
+    app.set_timer = lambda delay, cb: timer_calls.append((delay, cb))  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    event = _make_worker_event(WorkerState.ERROR, error=RuntimeError("network"))
+    app.on_worker_state_changed(event)
+
+    assert app._sync_in_progress is False
+    assert app._wake_retry_count == 3
+    assert len(timer_calls) == 1  # backoff timer scheduled
+
+
+def test_worker_success_while_suspended_clears_suspended(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = True
+    app._wake_retry_count = 2
+    app._sync_in_progress = True
+    app._app_focused = True
+
+    app.refresh_table = lambda: None  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    event = _make_worker_event(WorkerState.SUCCESS, result=(0, False, None))
+    app.on_worker_state_changed(event)
+
+    assert app._sync_in_progress is False
+    assert app._suspended is False
+    assert app._wake_retry_count == 0
+    assert app._last_sync is not None
+
+
+def test_worker_error_while_not_suspended_does_not_retry(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._suspended = False
+    app._sync_in_progress = True
+
+    timer_calls: list[tuple] = []
+    app.set_timer = lambda delay, cb: timer_calls.append((delay, cb))  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    event = _make_worker_event(WorkerState.ERROR, error=RuntimeError("network"))
+    app.on_worker_state_changed(event)
+
+    assert app._sync_in_progress is False
+    assert len(timer_calls) == 0  # no retry scheduled
+
+
+def test_start_sync_skipped_while_sync_in_progress(tmp_db) -> None:
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=60))
+    app._last_sync = datetime.now(timezone.utc)
+    app._sync_in_progress = True
+    app._last_sync_mono = time.monotonic()
+    app._last_sync_wall = time.time()
+
+    worker_calls: list = []
+    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+
+    app._start_sync()
+
+    assert len(worker_calls) == 0
+    assert app._sync_in_progress is True
