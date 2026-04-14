@@ -423,6 +423,11 @@ class AgendumApp(App):
     def _handle_wake_retry_failure(self) -> None:
         """Schedule the next wake-retry attempt with exponential backoff."""
         self._wake_retry_count += 1
+        if self._wake_retry_count > 10:
+            log.warning("Wake retries exhausted — resuming normal sync")
+            self._suspended = False
+            self._wake_retry_count = 0
+            return
         delay = min(2 * (2 ** (self._wake_retry_count - 1)), 30)
         log.info(
             "Wake retry %d failed — retrying in %ds",
