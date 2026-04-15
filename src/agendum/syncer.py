@@ -109,11 +109,37 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
                 author_login = (pr.get("author") or {}).get("login", "")
                 if author_login.lower() != gh_user.lower():
                     continue
+                reviews = pr.get("reviews", {}).get("nodes", [])
+                qualifying_reviews = [
+                    review
+                    for review in reviews
+                    if (review.get("author") or {}).get("login", "").lower() != gh_user.lower()
+                    and review.get("submittedAt")
+                    and review.get("id")
+                    and review.get("state") not in ("APPROVED", "CHANGES_REQUESTED", "PENDING")
+                ]
+                latest_comment_review = None
+                if qualifying_reviews:
+                    latest_comment_review = max(
+                        qualifying_reviews,
+                        key=lambda review: review.get("submittedAt", ""),
+                    )
+                last_commit_nodes = pr.get("commits", {}).get("nodes", [])
+                latest_commit_time = None
+                if last_commit_nodes:
+                    latest_commit_time = (
+                        last_commit_nodes[0].get("commit", {}).get("committedDate")
+                    )
                 status = gh.derive_authored_pr_status(
                     is_draft=pr.get("isDraft", False),
                     review_decision=pr.get("reviewDecision"),
                     state=pr.get("state", "OPEN"),
                     has_review_requests=(pr.get("reviewRequests", {}).get("totalCount", 0) > 0),
+                    latest_commit_time=latest_commit_time,
+                    latest_comment_review_id=(latest_comment_review or {}).get("id"),
+                    latest_comment_review_time=(latest_comment_review or {}).get("submittedAt"),
+                    author_login=author_login,
+                    review_threads=pr.get("reviewThreads", {}).get("nodes", []),
                 )
                 labels = [l["name"] for l in (pr.get("labels", {}).get("nodes", []))]
                 incoming_tasks.append({
@@ -283,7 +309,7 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
         item["last_changed_at"] = now
         update_task(db_path, task_id, **item)
         changes += 1
-        if "status" in item and item["status"] in ("changes requested", "approved"):
+        if "status" in item and item["status"] in ("changes requested", "approved", "review received"):
             attention = True
 
     for item in diff.to_close:

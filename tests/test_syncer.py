@@ -7,6 +7,83 @@ from agendum.db import add_task, find_task_by_gh_url, get_active_tasks, init_db
 from agendum.syncer import diff_tasks, run_sync
 
 
+def make_review(
+    *,
+    author: str,
+    submitted_at: str,
+    state: str,
+    review_id: str = "review-1",
+    body: str = "feedback",
+) -> dict:
+    return {
+        "id": review_id,
+        "author": {"login": author},
+        "submittedAt": submitted_at,
+        "state": state,
+        "body": body,
+    }
+
+
+def make_thread(*, is_resolved: bool, comments: list[dict]) -> dict:
+    return {
+        "isResolved": is_resolved,
+        "comments": {"nodes": comments},
+    }
+
+
+def make_thread_comment(
+    *,
+    author: str,
+    created_at: str,
+    review_id: str | None = None,
+) -> dict:
+    return {
+        "author": {"login": author},
+        "createdAt": created_at,
+        "pullRequestReview": {"id": review_id} if review_id is not None else None,
+    }
+
+
+def make_authored_pr(
+    *,
+    gh_user: str,
+    url: str,
+    review_decision: str | None = None,
+    last_commit_at: str = "2026-04-07T20:00:00Z",
+    reviews: list[dict] | None = None,
+    review_threads: list[dict] | None = None,
+) -> dict:
+    return {
+        "number": 12,
+        "title": "Improve sync status handling",
+        "url": url,
+        "state": "OPEN",
+        "isDraft": False,
+        "author": {"login": gh_user},
+        "reviewDecision": review_decision,
+        "reviewRequests": {"totalCount": 0},
+        "labels": {"nodes": []},
+        "commits": {"nodes": [{"commit": {"committedDate": last_commit_at}}]},
+        "reviews": {"nodes": reviews or []},
+        "reviewThreads": {"nodes": review_threads or []},
+    }
+
+
+def authored_repo_payload(*, authored_prs: list[dict]) -> dict:
+    return {
+        "data": {
+            "repository": {
+                "isArchived": False,
+                "openIssues": {"nodes": []},
+                "closedIssues": {"nodes": []},
+                "authoredPRs": {"nodes": authored_prs},
+                "mergedPRs": {"nodes": []},
+                "closedPRs": {"nodes": []},
+            },
+        },
+    }
+
+
 def test_diff_detects_new_task() -> None:
     existing: list[dict] = []
     incoming = [
@@ -295,3 +372,375 @@ async def test_run_sync_creates_review_requested_pr_with_author_name(tmp_db: Pat
     assert tasks[0]["gh_url"] == url
     assert tasks[0]["gh_author"] == "author"
     assert tasks[0]["gh_author_name"] == "Author"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_sets_authored_pr_to_review_received_for_non_blocking_feedback(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/12"
+    add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="open", gh_url=url)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return authored_repo_payload(
+            authored_prs=[
+                make_authored_pr(
+                    gh_user=gh_user,
+                    url=url,
+                    reviews=[
+                        make_review(
+                            author="reviewer",
+                            submitted_at="2026-04-10T12:00:00Z",
+                            state="COMMENTED",
+                        ),
+                    ],
+                    review_threads=[
+                        make_thread(
+                            is_resolved=False,
+                            comments=[
+                                make_thread_comment(
+                                    author="reviewer",
+                                    created_at="2026-04-10T12:01:00Z",
+                                    review_id="review-1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+        return []
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "review received"
+    assert task["seen"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_sync_keeps_changes_requested_for_blocking_review(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/12"
+    add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="open", gh_url=url)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return authored_repo_payload(
+            authored_prs=[
+                make_authored_pr(
+                    gh_user=gh_user,
+                    url=url,
+                    review_decision="CHANGES_REQUESTED",
+                    reviews=[
+                        make_review(
+                            author="reviewer",
+                            submitted_at="2026-04-10T12:00:00Z",
+                            state="CHANGES_REQUESTED",
+                        ),
+                    ],
+                    review_threads=[
+                        make_thread(
+                            is_resolved=False,
+                            comments=[
+                                make_thread_comment(
+                                    author="reviewer",
+                                    created_at="2026-04-10T12:01:00Z",
+                                    review_id="review-1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+        return []
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "changes requested"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_clears_review_received_after_author_reply(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/12"
+    add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return authored_repo_payload(
+            authored_prs=[
+                make_authored_pr(
+                    gh_user=gh_user,
+                    url=url,
+                    reviews=[
+                        make_review(
+                            author="reviewer",
+                            submitted_at="2026-04-10T12:00:00Z",
+                            state="COMMENTED",
+                        ),
+                    ],
+                    review_threads=[
+                        make_thread(
+                            is_resolved=False,
+                            comments=[
+                                make_thread_comment(
+                                    author="reviewer",
+                                    created_at="2026-04-10T12:01:00Z",
+                                    review_id="review-1",
+                                ),
+                                make_thread_comment(author="author", created_at="2026-04-10T12:05:00Z"),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+        return []
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_clears_review_received_after_all_threads_resolved(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/12"
+    add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return authored_repo_payload(
+            authored_prs=[
+                make_authored_pr(
+                    gh_user=gh_user,
+                    url=url,
+                    reviews=[
+                        make_review(
+                            author="reviewer",
+                            submitted_at="2026-04-10T12:00:00Z",
+                            state="COMMENTED",
+                        ),
+                    ],
+                    review_threads=[
+                        make_thread(
+                            is_resolved=True,
+                            comments=[
+                                make_thread_comment(
+                                    author="reviewer",
+                                    created_at="2026-04-10T12:01:00Z",
+                                    review_id="review-1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+        return []
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_keeps_review_received_after_push_when_feedback_threads_exist(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/12"
+    add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return authored_repo_payload(
+            authored_prs=[
+                make_authored_pr(
+                    gh_user=gh_user,
+                    url=url,
+                    last_commit_at="2026-04-10T12:05:00Z",
+                    reviews=[
+                        make_review(
+                            author="reviewer",
+                            submitted_at="2026-04-10T12:00:00Z",
+                            state="COMMENTED",
+                        ),
+                    ],
+                    review_threads=[
+                        make_thread(
+                            is_resolved=False,
+                            comments=[
+                                make_thread_comment(
+                                    author="reviewer",
+                                    created_at="2026-04-10T12:01:00Z",
+                                    review_id="review-1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+        return []
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "review received"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_clears_review_received_after_push_without_feedback_threads(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/12"
+    add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return authored_repo_payload(
+            authored_prs=[
+                make_authored_pr(
+                    gh_user=gh_user,
+                    url=url,
+                    last_commit_at="2026-04-10T12:05:00Z",
+                    reviews=[
+                        make_review(
+                            author="reviewer",
+                            submitted_at="2026-04-10T12:00:00Z",
+                            state="COMMENTED",
+                        ),
+                    ],
+                    review_threads=[],
+                ),
+            ],
+        )
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+        return []
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "open"

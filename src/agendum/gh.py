@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,11 @@ def derive_authored_pr_status(
     review_decision: str | None,
     state: str,
     has_review_requests: bool = False,
+    latest_commit_time: str | None = None,
+    latest_comment_review_id: str | None = None,
+    latest_comment_review_time: str | None = None,
+    author_login: str | None = None,
+    review_threads: list[dict[str, Any]] | None = None,
 ) -> str:
     if state == "MERGED":
         return "merged"
@@ -32,6 +38,14 @@ def derive_authored_pr_status(
         return "approved"
     if review_decision == "CHANGES_REQUESTED":
         return "changes requested"
+    if has_unacknowledged_review_feedback(
+        latest_comment_review_id=latest_comment_review_id,
+        latest_comment_review_time=latest_comment_review_time,
+        latest_commit_time=latest_commit_time,
+        author_login=author_login,
+        review_threads=review_threads or [],
+    ):
+        return "review received"
     if has_review_requests:
         return "awaiting review"
     return "open"
@@ -65,6 +79,85 @@ def parse_author_first_name(display_name: str | None) -> str | None:
 
 def extract_repo_short_name(full_repo: str) -> str:
     return full_repo.split("/", 1)[-1]
+
+
+def _parse_github_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _thread_has_author_reply_after(
+    thread: dict[str, Any],
+    *,
+    author_login: str,
+    review_time: str,
+) -> bool:
+    comments = (thread.get("comments") or {}).get("nodes", [])
+    for comment in comments:
+        comment_author = (comment.get("author") or {}).get("login", "")
+        created_at = comment.get("createdAt")
+        if (
+            comment_author.lower() == author_login.lower()
+            and created_at
+            and created_at > review_time
+        ):
+            return True
+    return False
+
+
+def _relevant_review_threads(
+    review_threads: list[dict[str, Any]],
+    *,
+    review_id: str,
+) -> list[dict[str, Any]]:
+    relevant: list[dict[str, Any]] = []
+    for thread in review_threads:
+        comments = (thread.get("comments") or {}).get("nodes", [])
+        if any(
+            ((comment.get("pullRequestReview") or {}).get("id") == review_id)
+            for comment in comments
+        ):
+            relevant.append(thread)
+    return relevant
+
+
+def has_unacknowledged_review_feedback(
+    *,
+    latest_comment_review_id: str | None,
+    latest_comment_review_time: str | None,
+    latest_commit_time: str | None,
+    author_login: str | None,
+    review_threads: list[dict[str, Any]],
+) -> bool:
+    if not latest_comment_review_id or not latest_comment_review_time:
+        return False
+
+    relevant_threads = _relevant_review_threads(
+        review_threads,
+        review_id=latest_comment_review_id,
+    )
+    if author_login:
+        for thread in relevant_threads:
+            if _thread_has_author_reply_after(
+                thread,
+                author_login=author_login,
+                review_time=latest_comment_review_time,
+            ):
+                return False
+    if relevant_threads and all(thread.get("isResolved", False) for thread in relevant_threads):
+        return False
+
+    review_dt = _parse_github_datetime(latest_comment_review_time)
+    commit_dt = _parse_github_datetime(latest_commit_time)
+    if not relevant_threads and review_dt and commit_dt and commit_dt > review_dt:
+        return False
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +224,34 @@ query($owner: String!, $name: String!, $user: String!) {
         author { login }
         reviewDecision
         reviewRequests(first: 10) { totalCount }
+        commits(last: 1) {
+          nodes {
+            commit {
+              committedDate
+            }
+          }
+        }
+        reviews(last: 20) {
+          nodes {
+            id
+            state
+            submittedAt
+            author { login }
+          }
+        }
+        reviewThreads(last: 50) {
+          nodes {
+            isResolved
+            isOutdated
+            comments(last: 20) {
+              nodes {
+                createdAt
+                pullRequestReview { id }
+                author { login }
+              }
+            }
+          }
+        }
         labels(first: 10) { nodes { name } }
       }
     }
