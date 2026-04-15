@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +22,12 @@ def derive_authored_pr_status(
     review_decision: str | None,
     state: str,
     has_review_requests: bool = False,
+    latest_commit_time: str | None = None,
+    latest_comment_review_id: str | None = None,
+    latest_comment_review_time: str | None = None,
+    qualifying_reviews: list[dict[str, Any]] | None = None,
+    author_login: str | None = None,
+    review_threads: list[dict[str, Any]] | None = None,
 ) -> str:
     if state == "MERGED":
         return "merged"
@@ -32,6 +39,15 @@ def derive_authored_pr_status(
         return "approved"
     if review_decision == "CHANGES_REQUESTED":
         return "changes requested"
+    if has_unacknowledged_review_feedback(
+        latest_comment_review_id=latest_comment_review_id,
+        latest_comment_review_time=latest_comment_review_time,
+        latest_commit_time=latest_commit_time,
+        author_login=author_login,
+        qualifying_reviews=qualifying_reviews or [],
+        review_threads=review_threads or [],
+    ):
+        return "review received"
     if has_review_requests:
         return "awaiting review"
     return "open"
@@ -65,6 +81,103 @@ def parse_author_first_name(display_name: str | None) -> str | None:
 
 def extract_repo_short_name(full_repo: str) -> str:
     return full_repo.split("/", 1)[-1]
+
+
+def _parse_github_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _thread_has_author_reply_after(
+    thread: dict[str, Any],
+    *,
+    author_login: str,
+    review_time: str,
+) -> bool:
+    comments = (thread.get("comments") or {}).get("nodes", [])
+    for comment in comments:
+        comment_author = (comment.get("author") or {}).get("login", "")
+        created_at = comment.get("createdAt")
+        if (
+            comment_author.lower() == author_login.lower()
+            and created_at
+            and created_at > review_time
+        ):
+            return True
+    return False
+
+
+def _relevant_review_threads(
+    review_threads: list[dict[str, Any]],
+    *,
+    review_id: str,
+) -> list[dict[str, Any]]:
+    relevant: list[dict[str, Any]] = []
+    for thread in review_threads:
+        comments = (thread.get("comments") or {}).get("nodes", [])
+        if any(
+            ((comment.get("pullRequestReview") or {}).get("id") == review_id)
+            for comment in comments
+        ):
+            relevant.append(thread)
+    return relevant
+
+
+def has_unacknowledged_review_feedback(
+    *,
+    latest_comment_review_id: str | None,
+    latest_comment_review_time: str | None,
+    latest_commit_time: str | None,
+    author_login: str | None,
+    qualifying_reviews: list[dict[str, Any]],
+    review_threads: list[dict[str, Any]],
+) -> bool:
+    reviews = qualifying_reviews
+    if not reviews and latest_comment_review_id and latest_comment_review_time:
+        reviews = [
+            {
+                "id": latest_comment_review_id,
+                "submittedAt": latest_comment_review_time,
+            },
+        ]
+    if not reviews:
+        return False
+
+    commit_dt = _parse_github_datetime(latest_commit_time)
+
+    for review in reviews:
+        review_id = review.get("id")
+        review_time = review.get("submittedAt")
+        if not review_id or not review_time:
+            continue
+
+        relevant_threads = _relevant_review_threads(
+            review_threads,
+            review_id=review_id,
+        )
+        if relevant_threads:
+            for thread in relevant_threads:
+                if thread.get("isResolved", False):
+                    continue
+                if author_login and _thread_has_author_reply_after(
+                    thread,
+                    author_login=author_login,
+                    review_time=review_time,
+                ):
+                    continue
+                return True
+            continue
+
+        review_dt = _parse_github_datetime(review_time)
+        if not review_dt or not commit_dt or commit_dt <= review_dt:
+            return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +244,34 @@ query($owner: String!, $name: String!, $user: String!) {
         author { login }
         reviewDecision
         reviewRequests(first: 10) { totalCount }
+        commits(last: 1) {
+          nodes {
+            commit {
+              committedDate
+            }
+          }
+        }
+        reviews(last: 20) {
+          nodes {
+            id
+            state
+            submittedAt
+            author { login }
+          }
+        }
+        reviewThreads(last: 50) {
+          nodes {
+            isResolved
+            isOutdated
+            comments(last: 20) {
+              nodes {
+                createdAt
+                pullRequestReview { id }
+                author { login }
+              }
+            }
+          }
+        }
         labels(first: 10) { nodes { name } }
       }
     }

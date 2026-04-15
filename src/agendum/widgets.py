@@ -16,6 +16,7 @@ STATUS_STYLES: dict[str, str] = {
     "open": "#60a5fa",
     "awaiting review": "#ffaa00",
     "changes requested": "#f87171",
+    "review received": "#f59e0b",
     "approved": "#4ade80",
     "merged": "#888888",
     "review requested": "#a78bfa",
