@@ -94,6 +94,89 @@ def test_authored_pr_review_received_for_non_blocking_feedback() -> None:
     ) == "review received"
 
 
+def test_authored_pr_review_received_stays_active_with_sibling_thread_reply() -> None:
+    assert authored_pr_status_with_review_feedback(
+        qualifying_reviews=[
+            {
+                "id": "review-1",
+                "submittedAt": "2026-04-10T12:00:00Z",
+            },
+        ],
+        review_threads=[
+            {
+                "isResolved": False,
+                "comments": {
+                    "nodes": [
+                        {
+                            "createdAt": "2026-04-10T12:01:00Z",
+                            "author": {"login": "reviewer"},
+                            "pullRequestReview": {"id": "review-1"},
+                        },
+                        {
+                            "createdAt": "2026-04-10T12:02:00Z",
+                            "author": {"login": "author"},
+                            "pullRequestReview": {"id": None},
+                        },
+                    ],
+                },
+            },
+            {
+                "isResolved": False,
+                "comments": {
+                    "nodes": [
+                        {
+                            "createdAt": "2026-04-10T12:03:00Z",
+                            "author": {"login": "reviewer"},
+                            "pullRequestReview": {"id": "review-1"},
+                        },
+                    ],
+                },
+            },
+        ],
+    ) == "review received"
+
+
+def test_authored_pr_review_received_stays_active_for_older_unresolved_review() -> None:
+    assert authored_pr_status_with_review_feedback(
+        qualifying_reviews=[
+            {
+                "id": "review-old",
+                "submittedAt": "2026-04-10T11:00:00Z",
+            },
+            {
+                "id": "review-new",
+                "submittedAt": "2026-04-10T12:00:00Z",
+            },
+        ],
+        review_threads=[
+            {
+                "isResolved": False,
+                "comments": {
+                    "nodes": [
+                        {
+                            "createdAt": "2026-04-10T11:01:00Z",
+                            "author": {"login": "reviewer"},
+                            "pullRequestReview": {"id": "review-old"},
+                        },
+                    ],
+                },
+            },
+            {
+                "isResolved": True,
+                "comments": {
+                    "nodes": [
+                        {
+                            "createdAt": "2026-04-10T12:01:00Z",
+                            "author": {"login": "reviewer"},
+                            "pullRequestReview": {"id": "review-new"},
+                        },
+                    ],
+                },
+            },
+        ],
+    ) == "review received"
+
+
 def test_authored_pr_review_received_clears_after_author_reply() -> None:
     assert authored_pr_status_with_review_feedback(
         latest_comment_review_id="review-1",

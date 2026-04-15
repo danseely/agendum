@@ -138,6 +138,7 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
                     latest_commit_time=latest_commit_time,
                     latest_comment_review_id=(latest_comment_review or {}).get("id"),
                     latest_comment_review_time=(latest_comment_review or {}).get("submittedAt"),
+                    qualifying_reviews=qualifying_reviews,
                     author_login=author_login,
                     review_threads=pr.get("reviewThreads", {}).get("nodes", []),
                 )

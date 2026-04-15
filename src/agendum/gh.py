@@ -25,6 +25,7 @@ def derive_authored_pr_status(
     latest_commit_time: str | None = None,
     latest_comment_review_id: str | None = None,
     latest_comment_review_time: str | None = None,
+    qualifying_reviews: list[dict[str, Any]] | None = None,
     author_login: str | None = None,
     review_threads: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -43,6 +44,7 @@ def derive_authored_pr_status(
         latest_comment_review_time=latest_comment_review_time,
         latest_commit_time=latest_commit_time,
         author_login=author_login,
+        qualifying_reviews=qualifying_reviews or [],
         review_threads=review_threads or [],
     ):
         return "review received"
@@ -132,32 +134,50 @@ def has_unacknowledged_review_feedback(
     latest_comment_review_time: str | None,
     latest_commit_time: str | None,
     author_login: str | None,
+    qualifying_reviews: list[dict[str, Any]],
     review_threads: list[dict[str, Any]],
 ) -> bool:
-    if not latest_comment_review_id or not latest_comment_review_time:
+    reviews = qualifying_reviews
+    if not reviews and latest_comment_review_id and latest_comment_review_time:
+        reviews = [
+            {
+                "id": latest_comment_review_id,
+                "submittedAt": latest_comment_review_time,
+            },
+        ]
+    if not reviews:
         return False
 
-    relevant_threads = _relevant_review_threads(
-        review_threads,
-        review_id=latest_comment_review_id,
-    )
-    if author_login:
-        for thread in relevant_threads:
-            if _thread_has_author_reply_after(
-                thread,
-                author_login=author_login,
-                review_time=latest_comment_review_time,
-            ):
-                return False
-    if relevant_threads and all(thread.get("isResolved", False) for thread in relevant_threads):
-        return False
-
-    review_dt = _parse_github_datetime(latest_comment_review_time)
     commit_dt = _parse_github_datetime(latest_commit_time)
-    if not relevant_threads and review_dt and commit_dt and commit_dt > review_dt:
-        return False
 
-    return True
+    for review in reviews:
+        review_id = review.get("id")
+        review_time = review.get("submittedAt")
+        if not review_id or not review_time:
+            continue
+
+        relevant_threads = _relevant_review_threads(
+            review_threads,
+            review_id=review_id,
+        )
+        if relevant_threads:
+            for thread in relevant_threads:
+                if thread.get("isResolved", False):
+                    continue
+                if author_login and _thread_has_author_reply_after(
+                    thread,
+                    author_login=author_login,
+                    review_time=review_time,
+                ):
+                    continue
+                return True
+            continue
+
+        review_dt = _parse_github_datetime(review_time)
+        if not review_dt or not commit_dt or commit_dt <= review_dt:
+            return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
