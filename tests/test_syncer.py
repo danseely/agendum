@@ -375,6 +375,111 @@ async def test_run_sync_creates_review_requested_pr_with_author_name(tmp_db: Pat
 
 
 @pytest.mark.asyncio
+async def test_run_sync_flips_reviewed_back_to_re_review_when_re_requested(tmp_db: Path, monkeypatch) -> None:
+    """After user reviews, if the author re-requests them (even without new commits),
+    the status should flip from 'reviewed' back to 're-review requested'."""
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/77"
+
+    add_task(
+        tmp_db,
+        title="Fix something",
+        source="pr_review",
+        status="reviewed",
+        project="example-repo",
+        gh_repo="example-org/example-repo",
+        gh_url=url,
+        gh_number=77,
+        gh_author="author",
+        gh_author_name="Author",
+        tags='["review"]',
+    )
+
+    async def fake_get_gh_username() -> str:
+        return "reviewer"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "openIssues": {"nodes": []},
+                    "closedIssues": {"nodes": []},
+                    "authoredPRs": {"nodes": []},
+                    "mergedPRs": {"nodes": []},
+                    "closedPRs": {"nodes": []},
+                },
+            },
+        }
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [
+            {
+                "number": 77,
+                "title": "Fix something",
+                "url": url,
+                "repository": {"nameWithOwner": "example-org/example-repo"},
+                "author": {"login": "author"},
+            }
+        ], True
+
+    async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": number,
+                        "title": "Fix something",
+                        "url": url,
+                        "author": {"login": "author", "name": "Author Person"},
+                        # Commit is OLDER than the review (simulates rebase or no-push re-request)
+                        "commits": {"nodes": [{"commit": {"committedDate": "2026-04-05T09:00:00Z"}}]},
+                        "reviews": {
+                            "nodes": [
+                                {
+                                    "author": {"login": "reviewer"},
+                                    "submittedAt": "2026-04-06T10:00:00Z",
+                                    "state": "CHANGES_REQUESTED",
+                                },
+                            ]
+                        },
+                        "timelineItems": {
+                            "nodes": [
+                                {
+                                    "createdAt": "2026-04-07T11:00:00Z",
+                                    "requestedReviewer": {"login": "reviewer"},
+                                },
+                            ]
+                        },
+                    },
+                },
+            },
+        }
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, _, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    tasks = get_active_tasks(tmp_db)
+    assert error is None
+    assert changes >= 1
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "re-review requested"
+
+
+@pytest.mark.asyncio
 async def test_run_sync_sets_authored_pr_to_review_received_for_non_blocking_feedback(tmp_db: Path, monkeypatch) -> None:
     init_db(tmp_db)
     url = "https://github.com/example-org/example-repo/pull/12"

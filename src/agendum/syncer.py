@@ -256,6 +256,7 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
         user_has_reviewed = len(user_reviews) > 0
 
         new_commits_since = False
+        re_requested_after_review = False
         if user_has_reviewed:
             last_review_time = max((r.get("submittedAt") or "" for r in user_reviews), default="")
             last_commit_nodes = pr_detail.get("commits", {}).get("nodes", [])
@@ -263,9 +264,20 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
                 last_commit_time = (last_commit_nodes[0].get("commit", {}).get("committedDate") or "")
                 new_commits_since = last_commit_time > last_review_time
 
+            request_events = pr_detail.get("timelineItems", {}).get("nodes", [])
+            for ev in request_events:
+                reviewer_login = ((ev.get("requestedReviewer") or {}).get("login") or "")
+                if reviewer_login.lower() != gh_user.lower():
+                    continue
+                created_at = ev.get("createdAt") or ""
+                if created_at and created_at > last_review_time:
+                    re_requested_after_review = True
+                    break
+
         status = gh.derive_review_pr_status(
             user_has_reviewed=user_has_reviewed,
             new_commits_since_review=new_commits_since,
+            re_requested_after_review=re_requested_after_review,
         )
 
         author_info = pr_detail.get("author") or {}
