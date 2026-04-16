@@ -404,9 +404,14 @@ async def discover_repos(orgs: list[str], gh_user: str) -> set[str]:
     return repos
 
 
-async def discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-    """Find all PRs where user's review is requested, across all orgs."""
+async def discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+    """Find all PRs where user's review is requested, across all orgs.
+
+    Returns (prs, ok) where *ok* is False if any org query failed,
+    indicating the result set may be incomplete.
+    """
     prs: list[dict] = []
+    ok = True
     for org in orgs:
         out = await _run_gh(
             "search", "prs",
@@ -418,7 +423,9 @@ async def discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
         )
         if out:
             prs.extend(json.loads(out))
-    return prs
+        else:
+            ok = False
+    return prs, ok
 
 
 async def fetch_notifications(gh_user: str) -> list[dict]:
