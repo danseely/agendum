@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "agendum"
 version = "0.1.0"
 description = "Terminal dashboard for GitHub PRs, issues, and tasks"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "textual>=1.0.0,<9.0.0",
@@ -15,6 +16,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "commitizen>=4.13.10",
+    "pre-commit>=4.5.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.23.0",
 ]
@@ -25,6 +28,16 @@ agendum-mcp = "agendum.mcp_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agendum"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+update_changelog_on_bump = true
+version_provider = "pep621"
+version_files = [
+    "pyproject.toml:version",
+    "src/agendum/__init__.py:__version__",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

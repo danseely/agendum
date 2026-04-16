@@ -25,10 +25,37 @@ If you previously installed agendum with pip, remove that install first:
 python -m pip uninstall agendum
 ```
 
+## Development Hooks
+
+Install the local git hooks after syncing dev dependencies:
+
+```bash
+uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+Commits and PR titles are expected to follow Conventional Commits, and releases follow SemVer.
+
+## Development
+
+```bash
+uv sync --dev
+uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+This repo uses Conventional Commits and SemVer. PR titles should also follow Conventional Commits so squash merges remain release-friendly.
+
+Releases are created manually from the GitHub Actions release workflow on `main`. For the first tagged release, provide an explicit version input because there is no previous release tag yet.
+
 ## Usage
 
 ```bash
 agendum
+```
+
+For a non-interactive install check:
+
+```bash
+agendum self-check
 ```
 
 On first run, you'll be prompted to configure your GitHub org. Config lives at `~/.agendum/config.toml`.
