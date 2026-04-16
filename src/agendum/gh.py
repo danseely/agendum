@@ -57,10 +57,11 @@ def derive_review_pr_status(
     *,
     user_has_reviewed: bool,
     new_commits_since_review: bool,
+    re_requested_after_review: bool = False,
 ) -> str:
     if not user_has_reviewed:
         return "review requested"
-    if new_commits_since_review:
+    if re_requested_after_review or new_commits_since_review:
         return "re-review requested"
     return "reviewed"
 
@@ -306,6 +307,16 @@ query($owner: String!, $name: String!, $number: Int!) {
       commits(last: 1) { nodes { commit { committedDate } } }
       reviews(first: 50) {
         nodes { author { login } submittedAt state }
+      }
+      timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+        nodes {
+          ... on ReviewRequestedEvent {
+            createdAt
+            requestedReviewer {
+              ... on User { login }
+            }
+          }
+        }
       }
     }
   }

@@ -266,6 +266,14 @@ def test_review_pr_re_review() -> None:
     assert derive_review_pr_status(user_has_reviewed=True, new_commits_since_review=True) == "re-review requested"
 
 
+def test_review_pr_re_review_via_explicit_rerequest() -> None:
+    assert derive_review_pr_status(
+        user_has_reviewed=True,
+        new_commits_since_review=False,
+        re_requested_after_review=True,
+    ) == "re-review requested"
+
+
 def test_issue_open() -> None:
     assert derive_issue_status(state="OPEN", has_linked_pr=False) == "open"
 
