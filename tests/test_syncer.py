@@ -186,8 +186,8 @@ async def test_run_sync_marks_closed_authored_pr_closed(tmp_db: Path, monkeypatc
             },
         }
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -250,8 +250,8 @@ async def test_run_sync_revives_terminal_task(tmp_db: Path, monkeypatch) -> None
             },
         }
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -319,7 +319,7 @@ async def test_run_sync_creates_review_requested_pr_with_author_name(tmp_db: Pat
             },
         }
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
         return [
             {
                 "number": 34,
@@ -328,7 +328,7 @@ async def test_run_sync_creates_review_requested_pr_with_author_name(tmp_db: Pat
                 "repository": {"nameWithOwner": "example-org/example-repo"},
                 "author": {"login": "author"},
             }
-        ]
+        ], True
 
     async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
         return {
@@ -412,8 +412,8 @@ async def test_run_sync_sets_authored_pr_to_review_received_for_non_blocking_fee
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -477,8 +477,8 @@ async def test_run_sync_keeps_changes_requested_for_blocking_review(tmp_db: Path
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -541,8 +541,8 @@ async def test_run_sync_clears_review_received_after_author_reply(tmp_db: Path, 
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -615,8 +615,8 @@ async def test_run_sync_keeps_review_received_with_sibling_thread_reply(tmp_db: 
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -696,8 +696,8 @@ async def test_run_sync_keeps_review_received_when_older_review_is_unresolved(tm
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -760,8 +760,8 @@ async def test_run_sync_clears_review_received_after_all_threads_resolved(tmp_db
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -824,8 +824,8 @@ async def test_run_sync_keeps_review_received_after_push_when_feedback_threads_e
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []
@@ -877,8 +877,8 @@ async def test_run_sync_clears_review_received_after_push_without_feedback_threa
             ],
         )
 
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> list[dict]:
-        return []
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user: str) -> list[dict]:
         return []

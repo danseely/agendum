@@ -107,8 +107,8 @@ async def test_run_sync_notification_marks_seen_task_unseen(
             },
         }
 
-    async def fake_discover_review_prs(orgs, gh_user) -> list:
-        return []
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user) -> list:
         return [{
@@ -160,8 +160,8 @@ async def test_run_sync_excludes_repos(tmp_db: Path, monkeypatch) -> None:
             },
         }
 
-    async def fake_discover_review_prs(orgs, gh_user) -> list:
-        return []
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user) -> list:
         return []
@@ -216,8 +216,8 @@ async def test_run_sync_attention_on_status_change_to_approved(
             },
         }
 
-    async def fake_discover_review_prs(orgs, gh_user) -> list:
-        return []
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user) -> list:
         return []
@@ -238,14 +238,51 @@ async def test_run_sync_attention_on_status_change_to_approved(
     assert task["status"] == "approved"
 
 
-async def test_run_sync_closes_review_pr_as_done(
+async def test_run_sync_preserves_tasks_when_repo_fetch_fails(
     tmp_db: Path, monkeypatch,
 ) -> None:
-    """When a review PR disappears from incoming, it should be marked 'done'."""
+    """Tasks should survive when their repo's API call fails."""
     init_db(tmp_db)
-    url = "https://github.com/org/repo/pull/8"
+    url = "https://github.com/org/repo/pull/3"
+    add_task(tmp_db, title="My PR", source="pr_authored", status="open",
+             gh_url=url, gh_repo="org/repo")
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_fetch_repo_data(owner, name, gh_user) -> dict:
+        # Simulate API failure — returns empty
+        return {}
+
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_fetch_notifications(gh_user) -> list:
+        return []
+
+    from agendum import gh
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db, AgendumConfig(repos=["org/repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert task is not None
+    assert task["status"] == "open", "Task should not be closed when repo fetch failed"
+
+
+async def test_run_sync_preserves_review_tasks_when_review_fetch_fails(
+    tmp_db: Path, monkeypatch,
+) -> None:
+    """Review tasks should survive when discover_review_prs fails."""
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/pull/9"
     add_task(tmp_db, title="Review PR", source="pr_review", status="review requested",
-             gh_url=url)
+             gh_url=url, gh_repo="org/repo")
 
     async def fake_get_gh_username() -> str:
         return "reviewer"
@@ -264,8 +301,55 @@ async def test_run_sync_closes_review_pr_as_done(
             },
         }
 
-    async def fake_discover_review_prs(orgs, gh_user) -> list:
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        return [], False  # Simulate API failure
+
+    async def fake_fetch_notifications(gh_user) -> list:
         return []
+
+    from agendum import gh
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db, AgendumConfig(repos=["org/repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert task is not None
+    assert task["status"] == "review requested", "Review task should not be closed when review fetch failed"
+
+
+async def test_run_sync_closes_review_pr_as_done(
+    tmp_db: Path, monkeypatch,
+) -> None:
+    """When a review PR disappears from incoming, it should be marked 'done'."""
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/pull/8"
+    add_task(tmp_db, title="Review PR", source="pr_review", status="review requested",
+             gh_url=url, gh_repo="org/repo")
+
+    async def fake_get_gh_username() -> str:
+        return "reviewer"
+
+    async def fake_fetch_repo_data(owner, name, gh_user) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "openIssues": {"nodes": []},
+                    "closedIssues": {"nodes": []},
+                    "authoredPRs": {"nodes": []},
+                    "mergedPRs": {"nodes": []},
+                    "closedPRs": {"nodes": []},
+                },
+            },
+        }
+
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
 
     async def fake_fetch_notifications(gh_user) -> list:
         return []

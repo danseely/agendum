@@ -29,8 +29,22 @@ class SyncResult:
     to_close: list[dict] = field(default_factory=list)
 
 
-def diff_tasks(existing: list[dict], incoming: list[dict]) -> SyncResult:
-    """Compare existing DB tasks against incoming GitHub state."""
+def diff_tasks(
+    existing: list[dict],
+    incoming: list[dict],
+    *,
+    fetched_repos: set[str] | None = None,
+    review_fetch_ok: bool = True,
+) -> SyncResult:
+    """Compare existing DB tasks against incoming GitHub state.
+
+    If *fetched_repos* is provided, only close tasks whose repo was
+    actually fetched.  This prevents a partial API failure from
+    wiping out items belonging to repos that simply weren't reached.
+
+    If *review_fetch_ok* is False, review tasks are never closed
+    (the review discovery may have returned incomplete results).
+    """
     result = SyncResult()
 
     existing_by_url: dict[str, dict] = {}
@@ -66,6 +80,14 @@ def diff_tasks(existing: list[dict], incoming: list[dict]) -> SyncResult:
     for task in existing:
         url = task.get("gh_url")
         if url and url not in incoming_urls and task.get("source") != "manual":
+            # Don't close review tasks when the review fetch was incomplete.
+            if not review_fetch_ok and task.get("source") == "pr_review":
+                continue
+            # Only close items from repos we actually fetched data for.
+            if fetched_repos is not None:
+                task_repo = task.get("gh_repo", "")
+                if task_repo not in fetched_repos:
+                    continue
             result.to_close.append(task)
 
     return result
@@ -93,6 +115,7 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
 
     sem = asyncio.Semaphore(8)
     incoming_tasks: list[dict] = []
+    fetched_repos: set[str] = set()  # repos we got data from
 
     async def fetch_one_repo(repo_full: str) -> None:
         async with sem:
@@ -103,6 +126,7 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
             repo_data = data.get("data", {}).get("repository", {})
             if not repo_data or repo_data.get("isArchived"):
                 return
+            fetched_repos.add(repo_full)
             short_name = gh.extract_repo_short_name(repo_full)
 
             for pr in repo_data.get("authoredPRs", {}).get("nodes", []):
@@ -213,7 +237,7 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
 
     await asyncio.gather(*(fetch_one_repo(r) for r in repos))
 
-    review_prs = await gh.discover_review_prs(config.orgs, gh_user)
+    review_prs, review_fetch_ok = await gh.discover_review_prs(config.orgs, gh_user)
     for pr_info in review_prs:
         repo_info = pr_info.get("repository", {})
         repo_full = repo_info.get("nameWithOwner", "")
@@ -261,8 +285,17 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
             "tags": json.dumps(["review"]),
         })
 
+    # If review discovery failed, don't let the diff close review tasks
+    # from repos we didn't get review data for.
+    if not review_fetch_ok:
+        log.warning("Review PR discovery had failures — skipping review task cleanup")
+
     existing = get_active_tasks(db_path)
-    diff = diff_tasks(existing, incoming_tasks)
+    diff = diff_tasks(
+        existing, incoming_tasks,
+        fetched_repos=fetched_repos,
+        review_fetch_ok=review_fetch_ok,
+    )
 
     changes = 0
     attention = False
