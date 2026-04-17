@@ -5,6 +5,47 @@ A terminal dashboard for tracking your GitHub PRs, issues, and tasks. Runs persi
 ## Install
 
 ```bash
+brew install danseely/tap/agendum
+```
+
+Requires:
+- [gh CLI](https://cli.github.com/) installed and authenticated (`gh auth login`)
+
+For a non-interactive install check:
+
+```bash
+agendum self-check
+```
+
+On first run, you'll be prompted to configure your GitHub org. Config lives at `~/.agendum/config.toml`.
+
+### Migrating From pip Or uv
+
+If you previously installed `agendum` with `pip` or `uv`, remove the old install before using Homebrew so your shell does not pick up a stale executable.
+
+Remove a `pip` install:
+
+```bash
+python -m pip uninstall agendum
+```
+
+Remove a `uv` tool install:
+
+```bash
+uv tool uninstall agendum
+```
+
+Then install the Homebrew version:
+
+```bash
+brew install danseely/tap/agendum
+```
+
+### Development Install
+
+For local development or editable installs from a checkout:
+
+```bash
 uv tool install --editable /path/to/agendum
 ```
 
@@ -17,12 +58,6 @@ If `agendum` is not found after installing, add uv's tool directory to your shel
 
 ```bash
 uv tool update-shell
-```
-
-If you previously installed agendum with pip, remove that install first:
-
-```bash
-python -m pip uninstall agendum
 ```
 
 ## Development Hooks
@@ -55,14 +90,6 @@ If you still have an older open release PR from a versioned branch such as `rele
 ```bash
 agendum
 ```
-
-For a non-interactive install check:
-
-```bash
-agendum self-check
-```
-
-On first run, you'll be prompted to configure your GitHub org. Config lives at `~/.agendum/config.toml`.
 
 ## MCP Server
 
