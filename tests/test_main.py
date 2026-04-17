@@ -53,3 +53,14 @@ def test_self_check_initializes_storage_and_prints_ok(
 
     assert db_path.exists()
     assert capsys.readouterr().out.strip() == "agendum self-check ok"
+
+
+def test_demo_screenshots_command_dispatches(monkeypatch) -> None:
+    called = []
+
+    monkeypatch.setattr(main, "run_demo_screenshots", lambda: called.append(True))
+    monkeypatch.setattr(main.sys, "argv", ["agendum", "demo-screenshots"])
+
+    main.main()
+
+    assert called == [True]

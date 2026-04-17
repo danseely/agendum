@@ -38,7 +38,29 @@ class AgendumConfig:
     seen_delay: int = 3
 
 
-def load_config(path: Path = CONFIG_PATH) -> AgendumConfig:
+@dataclass(frozen=True)
+class RuntimePaths:
+    config_path: Path
+    db_path: Path
+
+    @property
+    def config_dir(self) -> Path:
+        return self.config_path.parent
+
+
+def default_runtime_paths() -> RuntimePaths:
+    return RuntimePaths(config_path=CONFIG_PATH, db_path=DB_PATH)
+
+
+def runtime_paths(config_dir: Path) -> RuntimePaths:
+    return RuntimePaths(
+        config_path=config_dir / "config.toml",
+        db_path=config_dir / "agendum.db",
+    )
+
+
+def load_config(path: Path | None = None) -> AgendumConfig:
+    path = path or CONFIG_PATH
     if not path.exists():
         return AgendumConfig()
 
@@ -58,10 +80,11 @@ def load_config(path: Path = CONFIG_PATH) -> AgendumConfig:
     )
 
 
-def ensure_config() -> AgendumConfig:
+def ensure_config(path: Path | None = None) -> AgendumConfig:
     """Create config dir/file if missing, then load."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(DEFAULT_CONFIG)
-        os.chmod(CONFIG_PATH, 0o600)
-    return load_config()
+    path = path or CONFIG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not path.exists():
+        path.write_text(DEFAULT_CONFIG)
+        os.chmod(path, 0o600)
+    return load_config(path)

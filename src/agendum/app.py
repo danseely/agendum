@@ -5,7 +5,6 @@ from __future__ import annotations
 import atexit
 import logging
 import sys
-import textwrap
 import time
 import webbrowser
 from datetime import datetime, timezone
@@ -14,7 +13,9 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
+from textual.app import ScreenStackError
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Input, Static
 from textual.widgets._data_table import ColumnKey
@@ -144,6 +145,7 @@ class AgendumApp(App):
         self._last_sync_wall: float = time.time()
         self._suspended = False
         self._wake_retry_count: int = 0
+        self._title_width_chars: int = 10
 
     @property
     def db_path(self) -> Path:
@@ -159,20 +161,81 @@ class AgendumApp(App):
 
     # ── lifecycle ────────────────────────────────────────────────────
 
-    # Fixed column widths: dot, status, author, repo, link
+    # Fixed column widths: dot, status, link
     _COL_DOT = 2
     _COL_STATUS = 18
-    _COL_AUTHOR = 12
-    _COL_REPO = 20
     _COL_LINK = 12
-    _COL_FIXED = _COL_DOT + _COL_STATUS + _COL_AUTHOR + _COL_REPO + _COL_LINK
-    # DataTable adds 1-char padding per column boundary (6 columns = ~7 gutters)
-    _COL_GUTTERS = 12
+    _COL_FIXED = _COL_DOT + _COL_STATUS + _COL_LINK
+    _MIN_TITLE = 24
+    _MIN_AUTHOR = 12
+    _MIN_REPO = 12
+    _MAX_TITLE = 60
+    _MAX_AUTHOR = 24
+    _MAX_REPO = 26
+    _WIDTH_GROWTH_ORDER = (
+        "title",
+        "title",
+        "title",
+        "title",
+        "author",
+        "author",
+        "author",
+        "repo",
+        "repo",
+        "repo",
+    )
+
+    def _column_widths(self, _tasks: list[dict], available_width: int) -> tuple[int, int, int]:
+        """Compute balanced widths for title/author/repo columns."""
+        variable_width = max(
+            available_width - self._COL_FIXED,
+            self._MIN_TITLE + self._MIN_AUTHOR + self._MIN_REPO,
+        )
+        caps = {
+            "title": self._MAX_TITLE,
+            "author": self._MAX_AUTHOR,
+            "repo": self._MAX_REPO,
+        }
+
+        widths = {
+            "title": self._MIN_TITLE,
+            "author": self._MIN_AUTHOR,
+            "repo": self._MIN_REPO,
+        }
+        extra = variable_width - sum(widths.values())
+        # Grow in a 4:3:3 pattern so title still gets the largest share, but
+        # author and repo are not starved when the table has spare room.
+        while extra > 0:
+            progressed = False
+            for key in self._WIDTH_GROWTH_ORDER:
+                if widths[key] >= caps[key]:
+                    continue
+                widths[key] += 1
+                extra -= 1
+                progressed = True
+                if extra == 0:
+                    break
+            if not progressed:
+                break
+
+        if extra > 0:
+            widths["title"] += extra
+
+        self._title_width_chars = widths["title"]
+        return widths["title"], widths["author"], widths["repo"]
 
     def _title_width(self) -> int:
-        """Compute the title column width from available terminal width."""
-        w = self.size.width - self._COL_FIXED - self._COL_GUTTERS
-        return max(w, 10)
+        """Return the current title width based on the available viewport."""
+        available_width = self.size.width
+        if self.is_mounted:
+            try:
+                table = self.query_one(DataTable)
+            except ScreenStackError:
+                table = None
+            if table is not None and table.size.width:
+                available_width = table.size.width
+        self._title_width_chars = self._column_widths([], available_width)[0]
+        return self._title_width_chars
 
     async def on_mount(self) -> None:
         if self._config is None:
@@ -181,11 +244,12 @@ class AgendumApp(App):
         init_db(self._db_path)
 
         table = self.query_one(DataTable)
+        title_w, author_w, repo_w = self._column_widths([], self.size.width)
         table.add_column("", width=self._COL_DOT, key="dot")
         table.add_column("status", width=self._COL_STATUS, key="status")
-        table.add_column("title", width=self._title_width(), key="title")
-        table.add_column("author", width=self._COL_AUTHOR, key="author")
-        table.add_column("repo", width=self._COL_REPO, key="repo")
+        table.add_column("title", width=title_w, key="title")
+        table.add_column("author", width=author_w, key="author")
+        table.add_column("repo", width=repo_w, key="repo")
         table.add_column("link", width=self._COL_LINK, key="link")
         table.focus()
 
@@ -197,14 +261,20 @@ class AgendumApp(App):
         self.set_interval(0.25, self._tick_initial_sync_spinner)
         self.set_interval(10, self._update_status_bar)
 
-    def on_resize(self) -> None:
+    def on_resize(self, event: events.Resize) -> None:
         """Recompute title column width when terminal is resized."""
         table = self.query_one(DataTable)
         if not table.columns:
             return
-        title_key = ColumnKey("title")
-        if title_key in table.columns:
-            table.columns[title_key].width = self._title_width()
+        tasks = get_active_tasks(self._db_path)
+        title_w, author_w, repo_w = self._column_widths(tasks, event.size.width)
+        for key, width in (
+            (ColumnKey("title"), title_w),
+            (ColumnKey("author"), author_w),
+            (ColumnKey("repo"), repo_w),
+        ):
+            if key in table.columns:
+                table.columns[key].width = width
         self.refresh_table()
 
     # ── table rendering ──────────────────────────────────────────────
@@ -216,6 +286,15 @@ class AgendumApp(App):
         self._task_rows.clear()
 
         tasks = get_active_tasks(self._db_path)
+        available_width = table.size.width or self.size.width
+        title_w, author_w, repo_w = self._column_widths(tasks, available_width)
+        for key, width in (
+            (ColumnKey("title"), title_w),
+            (ColumnKey("author"), author_w),
+            (ColumnKey("repo"), repo_w),
+        ):
+            if key in table.columns:
+                table.columns[key].width = width
         sections = build_table_rows(tasks)
 
         for label, section_tasks in sections:
@@ -235,26 +314,32 @@ class AgendumApp(App):
             )
             self._task_rows.append(None)
 
-            title_w = self._title_width()
             for task in section_tasks:
                 seen = task.get("seen", 1)
                 dot = Text("●", style="#f87171") if not seen else Text(" ")
                 status_text = styled_status(task.get("status", ""))
                 title = task.get("title", "")
-                title_lines = textwrap.wrap(title, width=title_w) or [title]
-                title = "\n".join(title_lines)
+                title_text = Text(title, no_wrap=False, end="")
                 author = task.get("gh_author_name") or task.get("gh_author") or ""
-                if len(author) > self._COL_AUTHOR - 1:
-                    author = author[: self._COL_AUTHOR - 2] + "…"
+                if len(author) > author_w - 1:
+                    author = author[: author_w - 2] + "…"
                 repo = task.get("project") or task.get("gh_repo") or ""
-                if len(repo) > self._COL_REPO - 1:
-                    repo = repo[: self._COL_REPO - 2] + "…"
+                if len(repo) > repo_w - 1:
+                    repo = repo[: repo_w - 2] + "…"
                 link = format_link(
                     task.get("source", ""),
                     task.get("gh_number"),
                     task.get("gh_url"),
                 )
-                table.add_row(dot, status_text, title, author, repo, link, height=len(title_lines))
+                table.add_row(
+                    dot,
+                    status_text,
+                    title_text,
+                    author,
+                    repo,
+                    link,
+                    height=None,
+                )
                 self._task_rows.append(task)
 
         if saved_row > 0 and table.row_count > 0:

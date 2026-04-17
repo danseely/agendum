@@ -1,6 +1,8 @@
 # agendum
 
-A terminal dashboard for tracking your GitHub PRs, issues, and tasks. Runs persistently in an iTerm2 pane, syncs with GitHub every 60 seconds, and rings the bell when something needs your attention.
+The terminal dashboard for staying on top of GitHub PRs, reviews, issues, and follow-ups without leaving your pane.
+
+![agendum screenshot](docs/images/agendum-screenshot.png)
 
 ## Install
 
@@ -91,6 +93,16 @@ See [docs/release-hardening.md](docs/release-hardening.md) for the required GitH
 ```bash
 agendum
 ```
+
+## README Screenshot Demo
+
+To capture README screenshots with rich fake data in an isolated workspace:
+
+```bash
+agendum demo-screenshots
+```
+
+This launches the TUI against a disposable temp config and SQLite database, seeds a visually rich offline dataset, and leaves your real `~/.agendum` files untouched. Quit the app with `q` when you are done taking screenshots; the temporary workspace is cleaned up automatically.
 
 ## MCP Server
 
