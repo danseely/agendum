@@ -5,6 +5,7 @@ on:
     types: [closed]
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -89,3 +90,9 @@ jobs:
             This is a rolling release PR. Additional merges to `main` will update this PR in place, including recalculating the release version when needed.
 
             Merge this PR to publish the GitHub release.
+
+      - name: Trigger validation workflow for release PR
+        if: steps.next.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run validation.yml --ref release/next
