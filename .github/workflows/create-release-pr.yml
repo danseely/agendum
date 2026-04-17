@@ -35,6 +35,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          CURRENT_VERSION=$(uv run cz version --project)
+          CURRENT_TAG="v${CURRENT_VERSION}"
+
+          if ! git tag --list "${CURRENT_TAG}" | grep -q . && git tag --list 'v*' | grep -q .; then
+            echo "::notice::Skipping release PR creation because main is still at ${CURRENT_VERSION} while later release tags already exist. Sync the prior release metadata onto main first."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if NEXT_VERSION=$(uv run cz bump --get-next 2>cz.err); then
             echo "next_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
             exit 0
