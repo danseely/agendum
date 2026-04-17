@@ -58,7 +58,7 @@ jobs:
 
           if grep -q "No tag matching configuration could be found" cz.err; then
             echo "No reachable release tag was found from main." >&2
-            echo "Bootstrap the first release manually before relying on release PR automation." >&2
+            echo "Bootstrap the first release tag once, then the rolling release PR flow takes over." >&2
             cat cz.err >&2
             exit 1
           fi

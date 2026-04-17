@@ -49,18 +49,26 @@ Examples:
 
 ## Releases
 
-Releases are operator-triggered from GitHub Actions, not on every merge.
+Releases follow the rolling `release/next` PR model.
 
-The release workflow:
+The release PR workflow:
 
-- runs only from `main`
+- runs when a merged PR lands on `main`
 - bumps the version with `commitizen`
 - updates `CHANGELOG.md`
+- keeps a single `release/next` branch updated in place
+- triggers validation for the release PR
+
+The publish workflow:
+
+- runs only when the merged PR head branch is exactly `release/next`
 - creates an annotated git tag
 - builds `sdist` and wheel artifacts with `uv build`
 - publishes a GitHub release
 
-For the first release, provide an explicit `version` input because there is no prior tag history yet.
+For the first release, bootstrap one reachable release tag if none exists yet, then the rolling release PR automation takes over.
+
+See [docs/release-hardening.md](docs/release-hardening.md) for the required GitHub rulesets and token permissions.
 
 ## Packaging Notes
 
