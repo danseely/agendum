@@ -1,0 +1,82 @@
+name: Create Release PR
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: create-release-pr
+  cancel-in-progress: false
+
+jobs:
+  create-release-pr:
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      !startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dev dependencies
+        run: uv sync --dev
+
+      - name: Determine next release version
+        id: next
+        run: |
+          set -euo pipefail
+
+          if NEXT_VERSION=$(uv run cz bump --get-next 2>cz.err); then
+            echo "next_version=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if grep -q "\[NO_COMMITS_TO_BUMP\]" cz.err; then
+            echo "No releasable commits found since the last tag."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if grep -q "No tag matching configuration could be found" cz.err; then
+            echo "No reachable release tag was found from main." >&2
+            echo "Bootstrap the first release manually before relying on release PR automation." >&2
+            cat cz.err >&2
+            exit 1
+          fi
+
+          cat cz.err >&2
+          exit 1
+
+      - name: Prepare release commit contents
+        if: steps.next.outputs.skip != 'true'
+        env:
+          NEXT_VERSION: ${{ steps.next.outputs.next_version }}
+        run: uv run cz bump --yes --changelog --files-only "${NEXT_VERSION}"
+
+      - name: Create or update release PR
+        if: steps.next.outputs.skip != 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: release/next
+          delete-branch: false
+          commit-message: "chore(release): v${{ steps.next.outputs.next_version }}"
+          title: "chore(release): v${{ steps.next.outputs.next_version }}"
+          body: |
+            Automated release PR for `v${{ steps.next.outputs.next_version }}`.
+
+            This PR was created from the latest merged changes on `main` and contains:
+            - version file updates
+            - changelog updates
+
+            This is a rolling release PR. Additional merges to `main` will update this PR in place, including recalculating the release version when needed.
+
+            Merge this PR to publish the GitHub release.

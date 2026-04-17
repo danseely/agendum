@@ -1,86 +1,58 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      increment:
-        description: "SemVer increment to apply when version is omitted"
-        required: true
-        default: "patch"
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-      version:
-        description: "Explicit version override. Use this for the first release or any manual version target."
-        required: false
-        type: string
+  pull_request_target:
+    types: [closed]
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Ensure workflow runs from main
-        run: |
-          if [ "${GITHUB_REF_NAME}" != "main" ]; then
-            echo "Releases must be run from main." >&2
-            exit 1
-          fi
-
       - name: Install dev dependencies
         run: uv sync --dev
 
-      - name: Configure git author
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Bump version and create tag
-        env:
-          INPUT_INCREMENT: ${{ inputs.increment }}
-          INPUT_VERSION: ${{ inputs.version }}
+      - name: Determine release version
+        id: version
         run: |
           set -euo pipefail
-
-          if git tag --list 'v*' | grep -q .; then
-            HAS_TAGS=1
-          else
-            HAS_TAGS=0
-          fi
-
-          if [ -n "${INPUT_VERSION}" ]; then
-            uv run cz bump "${INPUT_VERSION}" --yes --changelog --annotated-tag
-          elif [ "${HAS_TAGS}" = "1" ]; then
-            uv run cz bump --yes --changelog --annotated-tag --increment "${INPUT_INCREMENT^^}"
-          else
-            echo "No existing release tags were found." >&2
-            echo "Provide the 'version' input for the first release, for example 0.1.1." >&2
-            exit 1
-          fi
-
-          echo "RELEASE_VERSION=$(uv run cz version --project)" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=$(uv run cz version --project --tag)" >> "$GITHUB_ENV"
+          echo "release_version=$(uv run cz version --project)" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$(uv run cz version --project --tag)" >> "$GITHUB_OUTPUT"
 
       - name: Build release artifacts
         run: uv build
 
-      - name: Push release commit and tag
-        run: git push origin HEAD:main --follow-tags
-
-      - name: Publish GitHub release
+      - name: Publish tag and GitHub release
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+          MERGE_COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "GitHub release ${RELEASE_TAG} already exists."
+            exit 0
+          fi
+
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            git tag -a "${RELEASE_TAG}" "${MERGE_COMMIT_SHA}" -m "${RELEASE_TAG}"
+            git push origin "${RELEASE_TAG}"
+          fi
+
           gh release create "${RELEASE_TAG}" dist/* \
             --title "${RELEASE_TAG}" \
             --generate-notes

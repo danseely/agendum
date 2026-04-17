@@ -44,7 +44,11 @@ uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 This repo uses Conventional Commits and SemVer. PR titles should also follow Conventional Commits so squash merges remain release-friendly.
 
-Releases are created manually from the GitHub Actions release workflow on `main`. For the first tagged release, provide an explicit version input because there is no previous release tag yet.
+Merging a non-release PR into `main` creates or updates a rolling `release/next` PR with the version and changelog changes. If more PRs merge into `main` before release, that same release PR is updated in place and its target version is recalculated as needed. Merging the release PR publishes the GitHub tag and release.
+
+The first release still needs a manual bootstrap if `main` does not yet contain a reachable release tag.
+
+If you still have an older open release PR from a versioned branch such as `release/v0.1.1`, that PR will not be updated by the rolling workflow. The rolling workflow only updates the PR backed by `release/next`.
 
 ## Usage
 

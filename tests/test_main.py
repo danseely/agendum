@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from agendum import __version__
 from agendum import __main__ as main
 
 
@@ -31,7 +32,7 @@ def test_main_version_flag_prints_version(capsys: pytest.CaptureFixture[str], mo
         main.main()
 
     assert exc_info.value.code == 0
-    assert capsys.readouterr().out.strip() == "agendum 0.1.0"
+    assert capsys.readouterr().out.strip() == f"agendum {__version__}"
 
 
 def test_self_check_initializes_storage_and_prints_ok(
