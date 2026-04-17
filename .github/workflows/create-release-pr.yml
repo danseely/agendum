@@ -6,6 +6,7 @@ on:
 
 permissions:
   actions: write
+  checks: write
   contents: write
   pull-requests: write
 
@@ -19,6 +20,8 @@ jobs:
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
       !startsWith(github.event.pull_request.head.ref, 'release/')
+    outputs:
+      skip: ${{ steps.next.outputs.skip }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,8 +94,81 @@ jobs:
 
             Merge this PR to publish the GitHub release.
 
-      - name: Trigger validation workflow for release PR
-        if: steps.next.outputs.skip != 'true'
+  validate-release-pr:
+    if: needs.create-release-pr.outputs.skip != 'true'
+    needs: create-release-pr
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release/next
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Resolve release head SHA
+        id: release-head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create pending validation check
+        id: pending-check
+        run: |
+          CHECK_ID=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/check-runs" \
+            -f name='validation' \
+            -f head_sha='${{ steps.release-head.outputs.sha }}' \
+            -f status='in_progress' \
+            -f details_url="${RUN_URL}" \
+            --jq '.id')
+          echo "id=${CHECK_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dev dependencies
+        id: install
+        continue-on-error: true
+        run: uv sync --dev
+
+      - name: Run pre-commit checks
+        id: precommit
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: uv run pre-commit run --all-files
+
+      - name: Run tests
+        id: tests
+        if: steps.install.outcome == 'success' && steps.precommit.outcome == 'success'
+        continue-on-error: true
+        run: uv run pytest -v
+
+      - name: Complete validation check
+        if: always() && steps.pending-check.outcome == 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run validation.yml --ref release/next
+          VALIDATION_CONCLUSION: >-
+            ${{ steps.install.outcome == 'success' &&
+                steps.precommit.outcome == 'success' &&
+                steps.tests.outcome == 'success' &&
+                'success' || 'failure' }}
+          VALIDATION_SUMMARY: >-
+            ${{ steps.install.outcome == 'success' &&
+                steps.precommit.outcome == 'success' &&
+                steps.tests.outcome == 'success' &&
+                'Release PR validation passed.' || 'Release PR validation failed. See the workflow run for details.' }}
+        run: |
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/check-runs/${{ steps.pending-check.outputs.id }}" \
+            -f name='validation' \
+            -f status='completed' \
+            -f conclusion="${VALIDATION_CONCLUSION}" \
+            -f details_url="${RUN_URL}" \
+            -f output[title]='Validation' \
+            -f output[summary]="${VALIDATION_SUMMARY}" >/dev/null
+
+      - name: Fail job if validation failed
+        if: steps.install.outcome != 'success' || steps.precommit.outcome != 'success' || steps.tests.outcome != 'success'
+        run: exit 1
