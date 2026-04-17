@@ -6,9 +6,11 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from agendum import __version__
 from agendum.config import CONFIG_DIR, CONFIG_PATH, DB_PATH, DEFAULT_CONFIG, ensure_config
+from agendum.demo import run_demo_screenshots
 
 
 def check_gh_cli() -> bool:
@@ -24,8 +26,9 @@ def check_gh_cli() -> bool:
         return False
 
 
-def first_run_setup() -> None:
+def first_run_setup(config_path: Path | None = None) -> None:
     """Interactive first-run setup."""
+    config_path = config_path or CONFIG_PATH
     print("Welcome to agendum!")
     print()
 
@@ -35,39 +38,40 @@ def first_run_setup() -> None:
         print("Then run: gh auth login")
         sys.exit(1)
 
-    if not CONFIG_PATH.exists():
-        print(f"Creating config at {CONFIG_PATH}")
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not config_path.exists():
+        print(f"Creating config at {config_path}")
+        config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
         org = input("GitHub org to scan (e.g. 'example-org'): ").strip()
         if org:
             config_text = DEFAULT_CONFIG.replace("orgs = []", f"orgs = [{json.dumps(org)}]")
         else:
             config_text = DEFAULT_CONFIG
-        CONFIG_PATH.write_text(config_text)
-        CONFIG_PATH.chmod(0o600)
-        print(f"Config written to {CONFIG_PATH}")
+        config_path.write_text(config_text)
+        config_path.chmod(0o600)
+        print(f"Config written to {config_path}")
         print()
 
     print("Starting agendum...")
     print()
 
 
-def self_check() -> None:
+def self_check(db_path: Path | None = None) -> None:
     """Run a non-interactive local validation for packaging and diagnostics."""
     from agendum.db import init_db
     from agendum.task_api import create_manual_task, list_tasks
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    init_db(DB_PATH)
+    db_path = db_path or DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    init_db(db_path)
 
     task = create_manual_task(
-        DB_PATH,
+        db_path,
         title="agendum self-check",
         project="packaging",
         tags=["self-check"],
     )
-    tasks = list_tasks(DB_PATH, limit=5)
+    tasks = list_tasks(db_path, limit=5)
 
     if task["title"] != "agendum self-check":
         raise RuntimeError("self-check failed to create the expected task")
@@ -82,10 +86,18 @@ def main() -> None:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("self-check", help="run a local non-interactive installation check")
+    subparsers.add_parser(
+        "demo-screenshots",
+        help="launch a disposable seeded workspace for README screenshots",
+    )
     args = parser.parse_args()
 
     if args.command == "self-check":
         self_check()
+        return
+
+    if args.command == "demo-screenshots":
+        run_demo_screenshots()
         return
 
     if not CONFIG_PATH.exists() or not DB_PATH.exists():
