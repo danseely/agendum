@@ -5,6 +5,7 @@ on:
     types: [closed]
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -57,7 +58,7 @@ jobs:
 
           if grep -q "No tag matching configuration could be found" cz.err; then
             echo "No reachable release tag was found from main." >&2
-            echo "Bootstrap the first release manually before relying on release PR automation." >&2
+            echo "Bootstrap the first release tag once, then the rolling release PR flow takes over." >&2
             cat cz.err >&2
             exit 1
           fi
@@ -89,3 +90,9 @@ jobs:
             This is a rolling release PR. Additional merges to `main` will update this PR in place, including recalculating the release version when needed.
 
             Merge this PR to publish the GitHub release.
+
+      - name: Trigger validation workflow for release PR
+        if: steps.next.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run validation.yml --ref release/next

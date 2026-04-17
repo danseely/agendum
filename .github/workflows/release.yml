@@ -9,10 +9,11 @@ permissions:
 
 jobs:
   release:
+    # Semantic guard: only the merged rolling release PR on release/next may publish.
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
-      startsWith(github.event.pull_request.head.ref, 'release/')
+      github.event.pull_request.head.ref == 'release/next'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -117,16 +117,16 @@ Automate SemVer-based tagging and GitHub release publication from Conventional C
 ### Tasks
 
 - [x] Decide release automation shape:
-  - manual operator-triggered release workflow
+  - rolling `release/next` release PR workflow
   - `commitizen` performs SemVer bumping, changelog, and tagging
 - [x] Configure changelog generation
 - [ ] Standardize where version is sourced from and updated
 - [x] Add GitHub Actions workflow for release creation
-- [x] Define manual release operator flow in docs
+- [x] Define rolling release PR and bootstrap flow in docs
 
 ### Preferred Direction
 
-Use a workflow that derives release bumps from Conventional Commits when manually triggered from `main`.
+Use a workflow that derives release bumps from Conventional Commits and promotes them through a rolling `release/next` PR.
 
 ### Open Implementation Detail
 
