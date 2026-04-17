@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from textual.worker import Worker, WorkerState
+from textual.widgets import DataTable
 
 from agendum.app import AgendumApp
 from agendum.config import AgendumConfig
@@ -47,7 +48,7 @@ def test_title_width_budget_is_balanced(tmp_db) -> None:
     app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=9999))
     title_w, author_w, repo_w = app._column_widths([], 120)
 
-    assert title_w + author_w + repo_w == 120 - app._COL_FIXED
+    assert title_w + author_w + repo_w == 120 - app._COL_FIXED - (2 * app._COL_COUNT)
     assert title_w > author_w >= 20
     assert title_w > repo_w >= 20
     assert title_w <= 44
@@ -56,6 +57,7 @@ def test_title_width_budget_is_balanced(tmp_db) -> None:
 def test_on_resize_recomputes_title_width(tmp_db) -> None:
     app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=9999))
     table = MagicMock()
+    table.cell_padding = 1
     table.columns = {
         "title": SimpleNamespace(width=0),
         "author": SimpleNamespace(width=0),
@@ -77,11 +79,41 @@ def test_on_resize_recomputes_title_width(tmp_db) -> None:
 
     app.on_resize(SimpleNamespace(size=SimpleNamespace(width=120)))
 
+    assert (
+        table.columns["title"].width
+        + table.columns["author"].width
+        + table.columns["repo"].width
+    ) == 120 - app._COL_FIXED - (2 * app._COL_COUNT)
     assert table.columns["author"].width >= 20
     assert table.columns["repo"].width >= 20
     assert table.columns["title"].width <= 44
     assert table.columns["title"].width > table.columns["author"].width
     app.refresh_table.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_table_width_stays_within_viewport(tmp_db) -> None:
+    from agendum.db import add_task, init_db
+
+    init_db(tmp_db)
+    add_task(
+        tmp_db,
+        title="Fix the DataTable width-budget regression",
+        source="manual",
+        status="active",
+        gh_author_name="Alexandria Stone",
+        project="agendum",
+    )
+
+    app = AgendumApp(db_path=tmp_db, config=AgendumConfig(orgs=[], sync_interval=9999))
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        table = app.query_one(DataTable)
+
+        assert table.virtual_size.width <= table.size.width
+        await pilot.press("q")
 
 
 # ── sleep/wake detection ─────────────────────────────────────────

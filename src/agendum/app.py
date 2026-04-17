@@ -166,60 +166,74 @@ class AgendumApp(App):
     _COL_STATUS = 18
     _COL_LINK = 12
     _COL_FIXED = _COL_DOT + _COL_STATUS + _COL_LINK
+    _COL_COUNT = 6
     _MIN_TITLE = 24
     _MIN_AUTHOR = 12
     _MIN_REPO = 12
     _MAX_TITLE = 60
     _MAX_AUTHOR = 24
     _MAX_REPO = 26
-    _WIDTH_GROWTH_ORDER = (
-        "title",
-        "title",
-        "title",
-        "title",
-        "author",
-        "author",
-        "author",
-        "repo",
-        "repo",
-        "repo",
-    )
+    _WIDTH_KEYS = ("title", "author", "repo")
+    _WIDTH_WEIGHTS = {"title": 4, "author": 3, "repo": 3}
 
-    def _column_widths(self, _tasks: list[dict], available_width: int) -> tuple[int, int, int]:
+    def _weighted_widths(self, budget: int) -> dict[str, int]:
+        """Split a width budget across title/author/repo with a 4:3:3 bias."""
+        widths = {key: 0 for key in self._WIDTH_KEYS}
+        if budget <= 0:
+            return widths
+
+        total_weight = sum(self._WIDTH_WEIGHTS.values())
+        cycles, remainder = divmod(budget, total_weight)
+        for key in self._WIDTH_KEYS:
+            widths[key] = cycles * self._WIDTH_WEIGHTS[key]
+
+        if remainder:
+            shares = {
+                key: remainder * self._WIDTH_WEIGHTS[key] / total_weight
+                for key in self._WIDTH_KEYS
+            }
+            increments = {key: int(shares[key]) for key in self._WIDTH_KEYS}
+            leftover = remainder - sum(increments.values())
+            order = sorted(
+                self._WIDTH_KEYS,
+                key=lambda key: (
+                    -(shares[key] - increments[key]),
+                    -self._WIDTH_WEIGHTS[key],
+                    self._WIDTH_KEYS.index(key),
+                ),
+            )
+            for key in order:
+                if leftover == 0:
+                    break
+                increments[key] += 1
+                leftover -= 1
+            for key in self._WIDTH_KEYS:
+                widths[key] += increments[key]
+
+        return widths
+
+    def _column_widths(
+        self,
+        _tasks: list[dict],
+        available_width: int,
+        cell_padding: int = 1,
+    ) -> tuple[int, int, int]:
         """Compute balanced widths for title/author/repo columns."""
-        variable_width = max(
-            available_width - self._COL_FIXED,
-            self._MIN_TITLE + self._MIN_AUTHOR + self._MIN_REPO,
-        )
-        caps = {
-            "title": self._MAX_TITLE,
-            "author": self._MAX_AUTHOR,
-            "repo": self._MAX_REPO,
-        }
+        rendered_fixed = self._COL_FIXED + (2 * cell_padding * self._COL_COUNT)
+        content_budget = max(available_width - rendered_fixed, 0)
 
         widths = {
             "title": self._MIN_TITLE,
             "author": self._MIN_AUTHOR,
             "repo": self._MIN_REPO,
         }
-        extra = variable_width - sum(widths.values())
-        # Grow in a 4:3:3 pattern so title still gets the largest share, but
-        # author and repo are not starved when the table has spare room.
-        while extra > 0:
-            progressed = False
-            for key in self._WIDTH_GROWTH_ORDER:
-                if widths[key] >= caps[key]:
-                    continue
-                widths[key] += 1
-                extra -= 1
-                progressed = True
-                if extra == 0:
-                    break
-            if not progressed:
-                break
-
-        if extra > 0:
-            widths["title"] += extra
+        min_total = sum(widths.values())
+        if content_budget < min_total:
+            widths = self._weighted_widths(content_budget)
+        else:
+            extra = content_budget - min_total
+            for key, amount in self._weighted_widths(extra).items():
+                widths[key] += amount
 
         self._title_width_chars = widths["title"]
         return widths["title"], widths["author"], widths["repo"]
@@ -227,6 +241,7 @@ class AgendumApp(App):
     def _title_width(self) -> int:
         """Return the current title width based on the available viewport."""
         available_width = self.size.width
+        cell_padding = 1
         if self.is_mounted:
             try:
                 table = self.query_one(DataTable)
@@ -234,7 +249,8 @@ class AgendumApp(App):
                 table = None
             if table is not None and table.size.width:
                 available_width = table.size.width
-        self._title_width_chars = self._column_widths([], available_width)[0]
+                cell_padding = table.cell_padding
+        self._title_width_chars = self._column_widths([], available_width, cell_padding)[0]
         return self._title_width_chars
 
     async def on_mount(self) -> None:
@@ -244,7 +260,7 @@ class AgendumApp(App):
         init_db(self._db_path)
 
         table = self.query_one(DataTable)
-        title_w, author_w, repo_w = self._column_widths([], self.size.width)
+        title_w, author_w, repo_w = self._column_widths([], self.size.width, table.cell_padding)
         table.add_column("", width=self._COL_DOT, key="dot")
         table.add_column("status", width=self._COL_STATUS, key="status")
         table.add_column("title", width=title_w, key="title")
@@ -267,7 +283,7 @@ class AgendumApp(App):
         if not table.columns:
             return
         tasks = get_active_tasks(self._db_path)
-        title_w, author_w, repo_w = self._column_widths(tasks, event.size.width)
+        title_w, author_w, repo_w = self._column_widths(tasks, event.size.width, table.cell_padding)
         for key, width in (
             (ColumnKey("title"), title_w),
             (ColumnKey("author"), author_w),
@@ -287,7 +303,7 @@ class AgendumApp(App):
 
         tasks = get_active_tasks(self._db_path)
         available_width = table.size.width or self.size.width
-        title_w, author_w, repo_w = self._column_widths(tasks, available_width)
+        title_w, author_w, repo_w = self._column_widths(tasks, available_width, table.cell_padding)
         for key, width in (
             (ColumnKey("title"), title_w),
             (ColumnKey("author"), author_w),
@@ -321,11 +337,9 @@ class AgendumApp(App):
                 title = task.get("title", "")
                 title_text = Text(title, no_wrap=False, end="")
                 author = task.get("gh_author_name") or task.get("gh_author") or ""
-                if len(author) > author_w - 1:
-                    author = author[: author_w - 2] + "…"
+                author = self._truncate_to_width(author, author_w)
                 repo = task.get("project") or task.get("gh_repo") or ""
-                if len(repo) > repo_w - 1:
-                    repo = repo[: repo_w - 2] + "…"
+                repo = self._truncate_to_width(repo, repo_w)
                 link = format_link(
                     task.get("source", ""),
                     task.get("gh_number"),
@@ -346,6 +360,17 @@ class AgendumApp(App):
             table.move_cursor(row=min(saved_row, table.row_count - 1))
 
         self._update_status_bar()
+
+    @staticmethod
+    def _truncate_to_width(text: str, width: int) -> str:
+        """Truncate text to fit a cell width, preserving an ellipsis when possible."""
+        if width <= 0:
+            return ""
+        if len(text) <= width:
+            return text
+        if width == 1:
+            return "…"
+        return text[: width - 1] + "…"
 
     def _update_status_bar(self) -> None:
         """Update the status bar with current sync state."""
