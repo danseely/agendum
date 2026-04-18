@@ -31,6 +31,26 @@ The rolling release PR workflow also needs repository write permissions for:
 - `pull-requests: write`
 - `actions: write` to dispatch validation on `release/next`
 
+## Homebrew tap dispatch
+
+After `release.yml` publishes a GitHub release, `.github/workflows/dispatch-homebrew-tap.yml` runs on the `release.published` event and sends a `repository_dispatch` to `danseely/homebrew-tap`.
+
+Use a dedicated repo secret named `HOMEBREW_TAP_DISPATCH_TOKEN` for the dispatch call. Keep that token scoped only to the tap repo and the `repository_dispatch` API path it needs; do not reuse `GITHUB_TOKEN` for cross-repo automation.
+
+The dispatch contract is:
+
+- `event_type`: `agendum_release_published`
+- `client_payload.source_repo`: `danseely/agendum`
+- `client_payload.tag`: the raw release tag, for example `v0.1.0`
+- `client_payload.version`: the SemVer string without the leading `v`, for example `0.1.0`
+- `client_payload.release_url`: the GitHub release URL
+- `client_payload.tarball_url`: the release tarball URL from GitHub
+- `client_payload.published_at`: the release publication timestamp
+
+Sequencing matters: the tap should treat `repository_dispatch` as the signal that the GitHub release already exists and can be consumed from the release URLs above. The tap should not assume source artifacts are available before the dispatch arrives.
+
+Operational fallback: if dispatch fails, rerun the `Dispatch Homebrew Tap` workflow from the Actions UI. If the workflow is unavailable, trigger the tap manually with the same `repository_dispatch` payload using `gh api` and the same token.
+
 ## Bootstrap flow
 
 If `create-release-pr.yml` cannot find a reachable prior release tag, bootstrap the first release tag once. After that, the automation keeps `release/next` moving and the publish workflow handles the release on merge.
