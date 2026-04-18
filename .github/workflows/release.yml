@@ -36,6 +36,11 @@ jobs:
       - name: Build release artifacts
         run: uv build
 
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Publish tag and GitHub release
         env:
           GITHUB_TOKEN: ${{ github.token }}
