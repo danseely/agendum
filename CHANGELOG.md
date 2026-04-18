@@ -1,3 +1,18 @@
+## v0.2.0 (2026-04-18)
+
+### Feat
+
+- dispatch homebrew tap after published releases
+- **docs**: add screenshot demo workflow
+
+### Fix
+
+- **ci**: attach validation check to release PRs
+- budget DataTable column widths correctly
+- **release**: harden release-next publish flow
+- **ci**: trigger validation for release PRs
+- detect re-review requests from timeline events
+
 ## v0.1.1 (2026-04-16)
 
 ### Feat
