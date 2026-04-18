@@ -11,6 +11,14 @@ from agendum.app import AgendumApp
 from agendum.config import AgendumConfig
 
 
+def _capture_worker_call(calls: list):
+    def fake_run_worker(coro, *args, **kwargs):
+        coro.close()
+        calls.append((args, kwargs))
+
+    return fake_run_worker
+
+
 @pytest.mark.asyncio
 async def test_app_starts_and_quits(tmp_db) -> None:
     from agendum.db import init_db
@@ -144,7 +152,7 @@ def test_sleep_detected_via_wall_vs_monotonic_drift(tmp_db) -> None:
     app._last_sync_wall = now_wall - 300
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -166,7 +174,7 @@ def test_no_sleep_detected_on_normal_interval(tmp_db) -> None:
     app._last_sync_wall = now_wall - 60
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -189,7 +197,7 @@ def test_first_sync_not_detected_as_sleep(tmp_db) -> None:
     app._last_sync_wall = now_wall - 600
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -209,7 +217,7 @@ def test_wake_retry_attempts_sync_immediately(tmp_db) -> None:
     app._wake_retry_count = 0
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._retry_sync_after_wake()
@@ -288,7 +296,7 @@ def test_start_sync_skipped_while_suspended(tmp_db) -> None:
     app._last_sync = datetime.now(timezone.utc)
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -302,7 +310,7 @@ def test_retry_sync_skipped_while_sync_in_progress(tmp_db) -> None:
     app._sync_in_progress = True
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._retry_sync_after_wake()
@@ -320,7 +328,7 @@ def test_force_sync_clears_suspended_state(tmp_db) -> None:
     app._last_sync_wall = time.time()
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app.action_force_sync()
@@ -336,7 +344,7 @@ def test_stale_retry_timer_is_noop_after_force_sync(tmp_db) -> None:
     app._wake_retry_count = 0
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     # Simulate an orphaned backoff timer firing after suspended was cleared
@@ -370,7 +378,7 @@ def test_wake_retry_gives_up_after_max_retries(tmp_db) -> None:
 # ── on_worker_state_changed integration ──────────────────────────
 
 
-def _make_worker_event(state: WorkerState, group: str = "sync", error: BaseException | None = None, result=None):
+def _make_worker_event(state: WorkerState, group: str = "sync:0", error: BaseException | None = None, result=None):
     worker = MagicMock(spec=Worker)
     worker.group = group
     worker.error = error
@@ -409,7 +417,7 @@ def test_worker_success_while_suspended_clears_suspended(tmp_db) -> None:
     app.refresh_table = lambda: None  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
-    event = _make_worker_event(WorkerState.SUCCESS, result=(0, False, None))
+    event = _make_worker_event(WorkerState.SUCCESS, result=(0, 0, False, None))
     app.on_worker_state_changed(event)
 
     assert app._sync_in_progress is False
@@ -442,7 +450,7 @@ def test_start_sync_skipped_while_sync_in_progress(tmp_db) -> None:
     app._last_sync_wall = time.time()
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()

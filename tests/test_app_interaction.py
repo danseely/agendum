@@ -1,13 +1,14 @@
 """Tests for AgendumApp user interaction — navigation, actions, input, sync."""
 
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Input
 
 from agendum.app import AgendumApp
-from agendum.config import AgendumConfig
+from agendum.config import AgendumConfig, load_config, namespace_runtime_paths, runtime_paths
 from agendum.db import add_task, get_active_tasks, init_db, update_task
 
 
@@ -190,3 +191,72 @@ def test_format_sync_error_empty_message(tmp_db: Path) -> None:
 def test_format_sync_error_none(tmp_db: Path) -> None:
     app = _app(tmp_db)
     assert app._format_sync_error(None) == "unknown sync error"
+
+
+async def test_switch_namespace_reauths_into_isolated_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    init_db(current_runtime.db_path)
+
+    auth_calls: list[Path] = []
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["current"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+
+        inp = app.query_one("#create-input", Input)
+        assert inp.has_class("visible")
+        inp.value = "example-org"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        target_runtime = namespace_runtime_paths("example-org", base_root)
+        assert auth_calls == [target_runtime.gh_config_dir]
+        assert app.runtime == target_runtime
+        assert app.db_path == target_runtime.db_path
+        assert load_config(target_runtime.config_path).orgs == ["example-org"]
+
+
+async def test_switch_namespace_keeps_current_workspace_when_auth_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    init_db(current_runtime.db_path)
+
+    monkeypatch.setattr("agendum.app.auth_login", lambda _gh_dir: False)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["current"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        inp = app.query_one("#create-input", Input)
+        inp.value = "example-org"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.runtime == current_runtime
+        assert not namespace_runtime_paths("example-org", base_root).config_path.exists()
+        assert app._sync_error == "gh auth login failed"

@@ -292,7 +292,7 @@ def _launch_demo(workspace_root: Path) -> None:
     print(f"Demo workspace: {workspace.paths.config_dir}")
     print("Seeded demo data in a disposable temp database.")
     print("Quit the app with `q` to clean up the workspace.")
-    app = AgendumApp(db_path=workspace.paths.db_path, config=workspace.config)
+    app = AgendumApp(runtime=workspace.paths, config=workspace.config)
     app.run()
 
 

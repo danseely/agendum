@@ -1,13 +1,17 @@
 import json
+from types import SimpleNamespace
 import pytest
 
 from agendum.gh import (
+    auth_login,
     derive_authored_pr_status,
     derive_review_pr_status,
     derive_issue_status,
     fetch_review_detail,
+    _run_gh,
     parse_author_first_name,
     extract_repo_short_name,
+    set_gh_config_dir,
 )
 
 
@@ -256,6 +260,53 @@ def test_authored_pr_review_received_clears_after_push_without_feedback_threads(
 
 def test_review_pr_requested() -> None:
     assert derive_review_pr_status(user_has_reviewed=False, new_commits_since_review=False) == "review requested"
+
+
+def test_auth_login_uses_isolated_gh_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    def fake_run(args, *, env, check):
+        calls["args"] = args
+        calls["env"] = env
+        calls["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("agendum.gh.subprocess.run", fake_run)
+
+    gh_dir = tmp_path / "workspace" / "gh"
+    assert auth_login(gh_dir) is True
+    assert gh_dir.is_dir()
+    assert calls["args"] == ["gh", "auth", "login"]
+    assert calls["env"]["GH_CONFIG_DIR"] == str(gh_dir)
+    assert calls["check"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_gh_uses_active_workspace_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("agendum.gh.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    gh_dir = tmp_path / "workspace" / "gh"
+    set_gh_config_dir(gh_dir)
+    try:
+        assert await _run_gh("api", "user", "--jq", ".login") == "ok\n"
+    finally:
+        set_gh_config_dir(None)
+
+    assert calls["args"] == ("gh", "api", "user", "--jq", ".login")
+    assert calls["kwargs"]["env"]["GH_CONFIG_DIR"] == str(gh_dir)
 
 
 def test_review_pr_reviewed() -> None:

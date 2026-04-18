@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+_GH_CONFIG_DIR: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -187,10 +190,14 @@ def has_unacknowledged_review_feedback(
 
 async def _run_gh(*args: str) -> str:
     """Run a gh CLI command and return stdout."""
+    env = os.environ.copy()
+    if _GH_CONFIG_DIR is not None:
+        env["GH_CONFIG_DIR"] = str(_GH_CONFIG_DIR)
     proc = await asyncio.create_subprocess_exec(
         "gh", *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
@@ -203,6 +210,24 @@ async def get_gh_username() -> str:
     """Get the authenticated GitHub username."""
     result = await _run_gh("api", "user", "--jq", ".login")
     return result.strip()
+
+
+def auth_login(gh_config_dir: Path) -> bool:
+    """Run an interactive gh auth login with an isolated config directory."""
+    gh_config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    env = os.environ.copy()
+    env["GH_CONFIG_DIR"] = str(gh_config_dir)
+    try:
+        result = subprocess.run(["gh", "auth", "login"], env=env, check=False)
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
+
+
+def set_gh_config_dir(gh_config_dir: Path | None) -> None:
+    """Configure the gh subprocess environment for the active workspace."""
+    global _GH_CONFIG_DIR
+    _GH_CONFIG_DIR = gh_config_dir
 
 
 # ---------------------------------------------------------------------------

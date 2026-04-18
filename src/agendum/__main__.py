@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from agendum import __version__
-from agendum.config import CONFIG_DIR, CONFIG_PATH, DB_PATH, DEFAULT_CONFIG, ensure_config
+from agendum.config import CONFIG_DIR, CONFIG_PATH, DB_PATH, DEFAULT_CONFIG, ensure_config, runtime_paths
 from agendum.demo import run_demo_screenshots
 
 
@@ -100,16 +100,18 @@ def main() -> None:
         run_demo_screenshots()
         return
 
-    if not CONFIG_PATH.exists() or not DB_PATH.exists():
-        first_run_setup()
+    paths = runtime_paths(CONFIG_DIR)
 
-    config = ensure_config()
+    if not paths.config_path.exists() or not paths.db_path.exists():
+        first_run_setup(paths.config_path)
+
+    config = ensure_config(paths.config_path)
 
     from agendum.app import AgendumApp
     from agendum.db import init_db
 
-    init_db(DB_PATH)
-    app = AgendumApp(db_path=DB_PATH, config=config)
+    init_db(paths.db_path)
+    app = AgendumApp(runtime=paths, config=config)
     app.run()
 
 
