@@ -89,6 +89,21 @@ The first release still needs a one-time bootstrap tag if `main` does not yet co
 If you still have an older open release PR from a versioned branch such as `release/v0.1.1`, that PR will not be updated by the rolling workflow. The rolling workflow only updates the PR backed by `release/next`.
 See [docs/release-hardening.md](docs/release-hardening.md) for the required GitHub rulesets and workflow permissions.
 
+### Release checklist
+
+From a maintainer point of view, the normal release flow is:
+
+1. Merge feature PRs into `main`.
+2. Let the automation create or update the rolling `release/next` PR.
+3. Review the `release/next` PR and wait for its validation check to pass.
+4. Merge `release/next` when you want to ship.
+5. Wait for the `Release` workflow to publish the GitHub tag and release.
+6. Wait for the `Dispatch Homebrew Tap` workflow to notify `danseely/homebrew-tap`.
+7. Review and merge the Homebrew tap release PR after its CI passes.
+8. If you want the separate Homebrew `pr-pull` publish path, trigger that in the tap after the release PR merge.
+
+You should not normally need to run the tap workflow by hand. Manual replay is only for missed dispatches, failed automation, or debugging.
+
 ## Usage
 
 ```bash

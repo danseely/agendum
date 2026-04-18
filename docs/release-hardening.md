@@ -6,6 +6,20 @@ This repository uses a rolling release PR model:
 2. Merging `release/next` publishes the tagged GitHub release.
 3. The first release still needs a bootstrap tag if the repository has no reachable release tag yet.
 
+## Maintainer flow
+
+The normal operator flow is:
+
+1. Merge releasable work into `main`.
+2. Review the rolling `release/next` PR created or updated by automation.
+3. Merge `release/next` when ready to ship.
+4. Confirm that `release.yml` publishes the GitHub tag and release.
+5. Confirm that `dispatch-homebrew-tap.yml` dispatches the release payload to `danseely/homebrew-tap`.
+6. Review and merge the resulting tap PR after Homebrew CI passes.
+7. Trigger the tap's separate `pr-pull` publish path if you want bottles/publish handled through the standard Homebrew flow.
+
+The tap release PR is part of the release path now. The code repository release is not complete until the corresponding tap PR is green and merged.
+
 ## Required GitHub rulesets
 
 Configure these in repository settings:
