@@ -70,7 +70,7 @@ Install the local git hooks after syncing dev dependencies:
 uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
-Commits and PR titles are expected to follow Conventional Commits, and releases follow SemVer.
+Commits and PR titles are expected to follow Conventional Commits, and releases follow SemVer. PR titles should be plain Conventional Commit subjects such as `fix: ...` or `docs(scope): ...`; do not add prefixes like `[codex]`.
 
 ## Development
 
@@ -79,7 +79,7 @@ uv sync --dev
 uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
-This repo uses Conventional Commits and SemVer. PR titles should also follow Conventional Commits so squash merges remain release-friendly.
+This repo uses Conventional Commits and SemVer. PR titles should also follow Conventional Commits so squash merges remain release-friendly. Keep PR titles as plain Conventional Commit subjects without extra prefixes.
 
 Merging a non-release PR into `main` creates or updates a rolling `release/next` PR with the version and changelog changes. If more PRs merge into `main` before release, that same release PR is updated in place and its target version is recalculated as needed. Merging the release PR publishes the GitHub tag and release.
 Publishing the GitHub release also dispatches `repository_dispatch` to `danseely/homebrew-tap` so the Homebrew tap can update from the release payload.
