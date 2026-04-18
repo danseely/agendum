@@ -1,0 +1,51 @@
+name: Dispatch Homebrew Tap
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
+      TARGET_REPO: danseely/homebrew-tap
+      DISPATCH_EVENT_TYPE: agendum_release_published
+      SOURCE_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_URL: ${{ github.event.release.html_url }}
+      TARBALL_URL: ${{ github.event.release.tarball_url }}
+      PUBLISHED_AT: ${{ github.event.release.published_at }}
+    steps:
+      - name: Dispatch release metadata to Homebrew tap
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "HOMEBREW_TAP_DISPATCH_TOKEN is required to dispatch to ${TARGET_REPO}." >&2
+            exit 1
+          fi
+
+          VERSION="${RELEASE_TAG#v}"
+
+          echo "Dispatching ${DISPATCH_EVENT_TYPE} to ${TARGET_REPO}."
+          if ! dispatch_output=$(gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${TARGET_REPO}/dispatches" \
+            -f event_type="${DISPATCH_EVENT_TYPE}" \
+            -F client_payload[source_repo]="${SOURCE_REPO}" \
+            -F client_payload[tag]="${RELEASE_TAG}" \
+            -F client_payload[version]="${VERSION}" \
+            -F client_payload[release_url]="${RELEASE_URL}" \
+            -F client_payload[tarball_url]="${TARBALL_URL}" \
+            -F client_payload[published_at]="${PUBLISHED_AT}" 2>&1); then
+            echo "Dispatch to ${TARGET_REPO} with event ${DISPATCH_EVENT_TYPE} failed." >&2
+            echo "${dispatch_output}" >&2
+            exit 1
+          fi
+
+          echo "Dispatch to ${TARGET_REPO} with event ${DISPATCH_EVENT_TYPE} succeeded."

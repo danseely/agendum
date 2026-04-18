@@ -82,6 +82,7 @@ uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 This repo uses Conventional Commits and SemVer. PR titles should also follow Conventional Commits so squash merges remain release-friendly.
 
 Merging a non-release PR into `main` creates or updates a rolling `release/next` PR with the version and changelog changes. If more PRs merge into `main` before release, that same release PR is updated in place and its target version is recalculated as needed. Merging the release PR publishes the GitHub tag and release.
+Publishing the GitHub release also dispatches `repository_dispatch` to `danseely/homebrew-tap` so the Homebrew tap can update from the release payload.
 
 The first release still needs a one-time bootstrap tag if `main` does not yet contain a reachable release tag.
 
