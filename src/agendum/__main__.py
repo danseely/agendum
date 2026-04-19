@@ -103,7 +103,7 @@ def main() -> None:
     paths = runtime_paths(CONFIG_DIR)
 
     if args.command == "reauth":
-        if not recover_gh_auth(paths.gh_config_dir, interactive=True):
+        if not recover_gh_auth(paths.gh_config_dir, interactive=True, force_refresh=True):
             print("Error: gh CLI is not installed or not authenticated.")
             print("Install: https://cli.github.com/")
             print(f"Then run: GH_CONFIG_DIR={paths.gh_config_dir} gh auth login")

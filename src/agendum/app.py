@@ -573,14 +573,16 @@ class AgendumApp(App):
             return
 
         target_namespace = namespace or None
-        if target_runtime.workspace_root != self._workspace_base_dir:
-            if not recover_gh_auth(target_runtime.gh_config_dir):
-                with self.suspend():
-                    authenticated = auth_login(target_runtime.gh_config_dir)
-                if not authenticated:
-                    self._sync_error = "gh auth login failed"
-                    self._update_status_bar()
-                    return
+        if not recover_gh_auth(
+            target_runtime.gh_config_dir,
+            source_dir=self._runtime.gh_config_dir,
+        ):
+            with self.suspend():
+                authenticated = auth_login(target_runtime.gh_config_dir)
+            if not authenticated:
+                self._sync_error = "gh auth login failed"
+                self._update_status_bar()
+                return
 
         config = ensure_workspace_config(
             target_runtime,

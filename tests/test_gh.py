@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
@@ -406,6 +407,33 @@ def test_recover_gh_auth_refreshes_workspace_from_default_auth(tmp_path, monkeyp
     assert refresh_calls == [(gh_dir, source_dir)]
 
 
+def test_recover_gh_auth_prefers_current_workspace_auth_before_default(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "target" / "gh"
+    source_dir = tmp_path / "current" / "gh"
+    default_dir = tmp_path / "default" / "gh"
+    status_by_dir = {
+        gh_dir: False,
+        source_dir: True,
+        default_dir: False,
+    }
+    refresh_calls: list[tuple[Path, Path | None]] = []
+
+    def fake_auth_status(path=None):
+        return status_by_dir.get(path, False)
+
+    def fake_refresh(target, source_dir=None):
+        refresh_calls.append((target, source_dir))
+        status_by_dir[target] = True
+
+    monkeypatch.setattr("agendum.gh.auth_status", fake_auth_status)
+    monkeypatch.setattr("agendum.gh.refresh_gh_config_dir", fake_refresh)
+    monkeypatch.setattr("agendum.gh.default_gh_config_dir", lambda: default_dir)
+    monkeypatch.setattr("agendum.gh.auth_login", lambda _target: pytest.fail("unexpected interactive login"))
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir) is True
+    assert refresh_calls == [(gh_dir, source_dir)]
+
+
 def test_recover_gh_auth_falls_back_to_interactive_login(tmp_path, monkeypatch) -> None:
     gh_dir = tmp_path / "workspace" / "gh"
     source_dir = tmp_path / "default" / "gh"
@@ -420,6 +448,37 @@ def test_recover_gh_auth_falls_back_to_interactive_login(tmp_path, monkeypatch) 
 
     assert recover_gh_auth(gh_dir, source_dir=source_dir, interactive=True) is True
     assert login_calls == [gh_dir]
+
+
+def test_recover_gh_auth_force_refreshes_even_when_workspace_auth_exists(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "current" / "gh"
+    status_by_dir = {
+        gh_dir: True,
+        source_dir: True,
+    }
+    refresh_calls: list[tuple[Path, Path | None]] = []
+
+    def fake_auth_status(path=None):
+        return status_by_dir.get(path, False)
+
+    def fake_refresh(target, source_dir=None):
+        refresh_calls.append((target, source_dir))
+
+    monkeypatch.setattr("agendum.gh.auth_status", fake_auth_status)
+    monkeypatch.setattr("agendum.gh.refresh_gh_config_dir", fake_refresh)
+    monkeypatch.setattr("agendum.gh.auth_login", lambda _target: pytest.fail("unexpected interactive login"))
+
+    assert recover_gh_auth(
+        gh_dir,
+        source_dir=source_dir,
+        interactive=True,
+        force_refresh=True,
+    ) is True
+    assert refresh_calls == [(gh_dir, source_dir)]
 
 
 @pytest.mark.asyncio

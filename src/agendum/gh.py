@@ -299,19 +299,37 @@ def refresh_gh_config_dir(gh_config_dir: Path, source_dir: Path | None = None) -
         os.chmod(target_path, 0o600)
 
 
+def _recovery_source_dirs(
+    gh_config_dir: Path,
+    *,
+    source_dir: Path | None,
+) -> list[Path]:
+    """List distinct upstream gh config dirs in recovery preference order."""
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (source_dir, default_gh_config_dir()):
+        if candidate is None or candidate == gh_config_dir or candidate in seen:
+            continue
+        candidates.append(candidate)
+        seen.add(candidate)
+    return candidates
+
+
 def recover_gh_auth(
     gh_config_dir: Path,
     *,
     source_dir: Path | None = None,
     interactive: bool = False,
+    force_refresh: bool = False,
 ) -> bool:
-    """Recover workspace-local gh auth from local state, default auth, or login."""
-    if auth_status(gh_config_dir):
+    """Recover or refresh workspace-local gh auth from upstream state or login."""
+    if not force_refresh and auth_status(gh_config_dir):
         return True
 
-    source_dir = source_dir or default_gh_config_dir()
-    if source_dir != gh_config_dir and auth_status(source_dir):
-        refresh_gh_config_dir(gh_config_dir, source_dir)
+    for candidate in _recovery_source_dirs(gh_config_dir, source_dir=source_dir):
+        if not auth_status(candidate):
+            continue
+        refresh_gh_config_dir(gh_config_dir, candidate)
         if auth_status(gh_config_dir):
             return True
 

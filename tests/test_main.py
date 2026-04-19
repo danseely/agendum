@@ -17,7 +17,13 @@ def test_first_run_setup_writes_private_escaped_config(
 
     monkeypatch.setattr(main, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(main, "CONFIG_PATH", config_path)
-    monkeypatch.setattr(main, "recover_gh_auth", lambda gh_path, interactive=False: gh_path == gh_dir and interactive)
+    monkeypatch.setattr(
+        main,
+        "recover_gh_auth",
+        lambda gh_path, interactive=False, force_refresh=False: (
+            gh_path == gh_dir and interactive and not force_refresh
+        ),
+    )
     monkeypatch.setattr("builtins.input", lambda _: 'example-"org')
 
     main.first_run_setup()
@@ -91,7 +97,9 @@ def test_main_recovers_default_workspace_gh_auth_before_launch(
     monkeypatch.setattr(
         main,
         "recover_gh_auth",
-        lambda gh_path, interactive=False: recover_calls.append((gh_path, interactive)) or True,
+        lambda gh_path, interactive=False, force_refresh=False: recover_calls.append(
+            (gh_path, interactive, force_refresh)
+        ) or True,
     )
     monkeypatch.setattr(main.sys, "argv", ["agendum"])
 
@@ -111,7 +119,7 @@ def test_main_recovers_default_workspace_gh_auth_before_launch(
 
     main.main()
 
-    assert recover_calls == [(gh_dir, False)]
+    assert recover_calls == [(gh_dir, False, False)]
     assert init_calls == [db_path]
     assert app_calls["ran"] is True
     assert app_calls["runtime"].gh_config_dir == gh_dir
@@ -125,17 +133,19 @@ def test_main_reauth_refreshes_base_workspace_auth(
     config_dir = tmp_path / ".agendum"
     gh_dir = config_dir / "gh"
 
-    calls: list[tuple[Path, bool]] = []
+    calls: list[tuple[Path, bool, bool]] = []
 
     monkeypatch.setattr(main, "CONFIG_DIR", config_dir)
     monkeypatch.setattr(
         main,
         "recover_gh_auth",
-        lambda gh_path, interactive=False: calls.append((gh_path, interactive)) or True,
+        lambda gh_path, interactive=False, force_refresh=False: calls.append(
+            (gh_path, interactive, force_refresh)
+        ) or True,
     )
     monkeypatch.setattr(main.sys, "argv", ["agendum", "reauth"])
 
     main.main()
 
-    assert calls == [(gh_dir, True)]
+    assert calls == [(gh_dir, True, True)]
     assert capsys.readouterr().out.strip() == f"Workspace gh auth ready at {gh_dir}"

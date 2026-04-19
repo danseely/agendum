@@ -253,6 +253,10 @@ async def _run_sync_once(
     await asyncio.gather(*(fetch_one_repo(r) for r in repos))
 
     review_prs, review_fetch_ok = await gh.discover_review_prs(config.orgs, gh_user)
+    if config.repos and not config.orgs:
+        # Repo-only workspaces do not currently have repo-scoped review discovery,
+        # so review cleanup cannot be treated as complete.
+        review_fetch_ok = False
     for pr_info in review_prs:
         repo_info = pr_info.get("repository", {})
         repo_full = repo_info.get("nameWithOwner", "")

@@ -207,11 +207,11 @@ async def test_switch_namespace_reauths_into_isolated_workspace(
     current_runtime = runtime_paths(base_root)
     init_db(current_runtime.db_path)
 
-    recover_calls: list[Path] = []
+    recover_calls: list[tuple[Path, Path | None]] = []
     auth_calls: list[Path] = []
     monkeypatch.setattr(
         "agendum.app.recover_gh_auth",
-        lambda gh_dir: recover_calls.append(gh_dir) or False,
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or False,
     )
     monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
     monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
@@ -235,7 +235,7 @@ async def test_switch_namespace_reauths_into_isolated_workspace(
         await pilot.pause()
 
         target_runtime = namespace_runtime_paths("example-org", base_root)
-        assert recover_calls == [target_runtime.gh_config_dir]
+        assert recover_calls == [(target_runtime.gh_config_dir, current_runtime.gh_config_dir)]
         assert auth_calls == [target_runtime.gh_config_dir]
         assert app.runtime == target_runtime
         assert app.db_path == target_runtime.db_path
@@ -250,11 +250,11 @@ async def test_switch_namespace_reuses_existing_workspace_auth_without_prompt(
     current_runtime = runtime_paths(base_root)
     init_db(current_runtime.db_path)
 
-    recover_calls: list[Path] = []
+    recover_calls: list[tuple[Path, Path | None]] = []
     auth_calls: list[Path] = []
     monkeypatch.setattr(
         "agendum.app.recover_gh_auth",
-        lambda gh_dir: recover_calls.append(gh_dir) or True,
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or True,
     )
     monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
     monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
@@ -277,7 +277,7 @@ async def test_switch_namespace_reuses_existing_workspace_auth_without_prompt(
         await pilot.pause()
 
         target_runtime = namespace_runtime_paths("example-org", base_root)
-        assert recover_calls == [target_runtime.gh_config_dir]
+        assert recover_calls == [(target_runtime.gh_config_dir, current_runtime.gh_config_dir)]
         assert auth_calls == []
         assert app.runtime == target_runtime
         assert app.db_path == target_runtime.db_path
@@ -334,7 +334,7 @@ async def test_repo_only_namespace_keeps_identity_and_noops_on_resubmit(
     )
 
     auth_calls: list[Path] = []
-    monkeypatch.setattr("agendum.app.recover_gh_auth", lambda _gh_dir: True)
+    monkeypatch.setattr("agendum.app.recover_gh_auth", lambda _gh_dir, source_dir=None: True)
     monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
     monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
 
@@ -375,7 +375,11 @@ async def test_switch_namespace_keeps_current_workspace_when_auth_fails(
     current_runtime = runtime_paths(base_root)
     init_db(current_runtime.db_path)
 
-    monkeypatch.setattr("agendum.app.recover_gh_auth", lambda _gh_dir: False)
+    recover_calls: list[tuple[Path, Path | None]] = []
+    monkeypatch.setattr(
+        "agendum.app.recover_gh_auth",
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or False,
+    )
     monkeypatch.setattr("agendum.app.auth_login", lambda _gh_dir: False)
     monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
 
@@ -396,6 +400,10 @@ async def test_switch_namespace_keeps_current_workspace_when_auth_fails(
         await pilot.pause()
 
         assert app.runtime == current_runtime
+        assert recover_calls == [(
+            namespace_runtime_paths("example-org", base_root).gh_config_dir,
+            current_runtime.gh_config_dir,
+        )]
         assert not namespace_runtime_paths("example-org", base_root).config_path.exists()
         assert app._sync_error == "gh auth login failed"
 
@@ -415,7 +423,12 @@ async def test_switch_namespace_blank_returns_to_base_workspace(
     current_runtime = namespace_runtime_paths("example-org", base_root)
     init_db(current_runtime.db_path)
 
+    recover_calls: list[tuple[Path, Path | None]] = []
     auth_calls: list[Path] = []
+    monkeypatch.setattr(
+        "agendum.app.recover_gh_auth",
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or True,
+    )
     monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
     monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
 
@@ -437,6 +450,7 @@ async def test_switch_namespace_blank_returns_to_base_workspace(
         await pilot.pause()
 
         assert auth_calls == []
+        assert recover_calls == [(base_runtime.gh_config_dir, current_runtime.gh_config_dir)]
         assert app.runtime == base_runtime
         assert app.db_path == base_runtime.db_path
         assert app.current_namespace is None
