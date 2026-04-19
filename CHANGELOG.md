@@ -1,3 +1,14 @@
+## v0.3.0 (2026-04-19)
+
+### Feat
+
+- add isolated GitHub namespace switching
+
+### Fix
+
+- sync uv.lock package version
+- configure git identity before tagging releases
+
 ## v0.2.0 (2026-04-18)
 
 ### Feat
