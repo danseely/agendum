@@ -8,7 +8,15 @@ from textual.worker import Worker, WorkerState
 from textual.widgets import DataTable
 
 from agendum.app import AgendumApp
-from agendum.config import AgendumConfig
+from agendum.config import AgendumConfig, namespace_runtime_paths, runtime_paths
+
+
+def _capture_worker_call(calls: list):
+    def fake_run_worker(coro, *args, **kwargs):
+        coro.close()
+        calls.append((args, kwargs))
+
+    return fake_run_worker
 
 
 @pytest.mark.asyncio
@@ -116,6 +124,72 @@ async def test_table_width_stays_within_viewport(tmp_db) -> None:
         await pilot.press("q")
 
 
+def test_stale_seen_delay_callback_is_ignored_after_workspace_switch(tmp_path) -> None:
+    from agendum.db import add_task, get_active_tasks, init_db, update_task
+
+    original_db = tmp_path / "original.db"
+    switched_db = tmp_path / "switched.db"
+    init_db(original_db)
+    init_db(switched_db)
+
+    original_task = add_task(original_db, title="Original", source="manual", status="active")
+    switched_task = add_task(switched_db, title="Switched", source="manual", status="active")
+    update_task(original_db, original_task, seen=0)
+    update_task(switched_db, switched_task, seen=0)
+
+    app = AgendumApp(
+        db_path=original_db,
+        config=AgendumConfig(orgs=[], sync_interval=9999, seen_delay=3),
+    )
+    app._app_focused = True
+
+    timer_callbacks: list[object] = []
+    app.set_timer = lambda delay, cb: timer_callbacks.append(cb) or SimpleNamespace(stop=lambda: None)  # type: ignore[assignment]
+
+    app.on_app_focus()
+    app._sync_context_id += 1
+    app._db_path = switched_db
+
+    timer_callbacks[0]()
+
+    assert get_active_tasks(original_db)[0]["seen"] == 0
+    assert get_active_tasks(switched_db)[0]["seen"] == 0
+
+
+def test_apply_runtime_rearms_seen_delay_when_app_is_focused(tmp_path) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    target_runtime = namespace_runtime_paths("example-org", base_root)
+
+    from agendum.db import init_db
+
+    init_db(current_runtime.db_path)
+    init_db(target_runtime.db_path)
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["base"], sync_interval=9999, seen_delay=3),
+    )
+    app._app_focused = True
+
+    stopped: list[bool] = []
+    schedule_calls: list[bool] = []
+    app._seen_timer = SimpleNamespace(stop=lambda: stopped.append(True))
+    app._schedule_mark_seen = lambda: schedule_calls.append(True)  # type: ignore[assignment]
+    app.refresh_table = lambda: None  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    app._apply_runtime(
+        target_runtime,
+        AgendumConfig(orgs=["example-org"], sync_interval=9999, seen_delay=3),
+    )
+
+    assert stopped == [True]
+    assert schedule_calls == [True]
+
+
 # ── sleep/wake detection ─────────────────────────────────────────
 
 
@@ -144,7 +218,7 @@ def test_sleep_detected_via_wall_vs_monotonic_drift(tmp_db) -> None:
     app._last_sync_wall = now_wall - 300
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -166,7 +240,7 @@ def test_no_sleep_detected_on_normal_interval(tmp_db) -> None:
     app._last_sync_wall = now_wall - 60
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -189,7 +263,7 @@ def test_first_sync_not_detected_as_sleep(tmp_db) -> None:
     app._last_sync_wall = now_wall - 600
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -209,7 +283,7 @@ def test_wake_retry_attempts_sync_immediately(tmp_db) -> None:
     app._wake_retry_count = 0
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._retry_sync_after_wake()
@@ -288,7 +362,7 @@ def test_start_sync_skipped_while_suspended(tmp_db) -> None:
     app._last_sync = datetime.now(timezone.utc)
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()
@@ -302,7 +376,7 @@ def test_retry_sync_skipped_while_sync_in_progress(tmp_db) -> None:
     app._sync_in_progress = True
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._retry_sync_after_wake()
@@ -320,7 +394,7 @@ def test_force_sync_clears_suspended_state(tmp_db) -> None:
     app._last_sync_wall = time.time()
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app.action_force_sync()
@@ -336,7 +410,7 @@ def test_stale_retry_timer_is_noop_after_force_sync(tmp_db) -> None:
     app._wake_retry_count = 0
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     # Simulate an orphaned backoff timer firing after suspended was cleared
@@ -370,7 +444,7 @@ def test_wake_retry_gives_up_after_max_retries(tmp_db) -> None:
 # ── on_worker_state_changed integration ──────────────────────────
 
 
-def _make_worker_event(state: WorkerState, group: str = "sync", error: BaseException | None = None, result=None):
+def _make_worker_event(state: WorkerState, group: str = "sync:0", error: BaseException | None = None, result=None):
     worker = MagicMock(spec=Worker)
     worker.group = group
     worker.error = error
@@ -409,7 +483,7 @@ def test_worker_success_while_suspended_clears_suspended(tmp_db) -> None:
     app.refresh_table = lambda: None  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
-    event = _make_worker_event(WorkerState.SUCCESS, result=(0, False, None))
+    event = _make_worker_event(WorkerState.SUCCESS, result=(0, 0, False, None))
     app.on_worker_state_changed(event)
 
     assert app._sync_in_progress is False
@@ -442,7 +516,7 @@ def test_start_sync_skipped_while_sync_in_progress(tmp_db) -> None:
     app._last_sync_wall = time.time()
 
     worker_calls: list = []
-    app.run_worker = lambda *a, **kw: worker_calls.append(1)  # type: ignore[assignment]
+    app.run_worker = _capture_worker_call(worker_calls)  # type: ignore[assignment]
     app._update_status_bar = lambda: None  # type: ignore[assignment]
 
     app._start_sync()

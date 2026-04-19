@@ -1,13 +1,20 @@
 """Tests for AgendumApp user interaction — navigation, actions, input, sync."""
 
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from textual.widgets import DataTable
+from textual.widgets import DataTable, Input
 
 from agendum.app import AgendumApp
-from agendum.config import AgendumConfig
+from agendum.config import (
+    AgendumConfig,
+    ensure_workspace_config,
+    load_config,
+    namespace_runtime_paths,
+    runtime_paths,
+)
 from agendum.db import add_task, get_active_tasks, init_db, update_task
 
 
@@ -190,3 +197,337 @@ def test_format_sync_error_empty_message(tmp_db: Path) -> None:
 def test_format_sync_error_none(tmp_db: Path) -> None:
     app = _app(tmp_db)
     assert app._format_sync_error(None) == "unknown sync error"
+
+
+async def test_switch_namespace_reauths_into_isolated_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    init_db(current_runtime.db_path)
+
+    recover_calls: list[tuple[Path, Path | None]] = []
+    auth_calls: list[Path] = []
+    monkeypatch.setattr(
+        "agendum.app.recover_gh_auth",
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or False,
+    )
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["current"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+
+        inp = app.query_one("#create-input", Input)
+        assert inp.has_class("visible")
+        inp.value = "example-org"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        target_runtime = namespace_runtime_paths("example-org", base_root)
+        assert recover_calls == [(target_runtime.gh_config_dir, current_runtime.gh_config_dir)]
+        assert auth_calls == [target_runtime.gh_config_dir]
+        assert app.runtime == target_runtime
+        assert app.db_path == target_runtime.db_path
+        assert load_config(target_runtime.config_path).orgs == ["example-org"]
+
+
+async def test_switch_namespace_reuses_existing_workspace_auth_without_prompt(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    init_db(current_runtime.db_path)
+
+    recover_calls: list[tuple[Path, Path | None]] = []
+    auth_calls: list[Path] = []
+    monkeypatch.setattr(
+        "agendum.app.recover_gh_auth",
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or True,
+    )
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["current"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+
+        inp = app.query_one("#create-input", Input)
+        inp.value = "example-org"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        target_runtime = namespace_runtime_paths("example-org", base_root)
+        assert recover_calls == [(target_runtime.gh_config_dir, current_runtime.gh_config_dir)]
+        assert auth_calls == []
+        assert app.runtime == target_runtime
+        assert app.db_path == target_runtime.db_path
+
+
+async def test_switch_namespace_is_noop_for_current_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = namespace_runtime_paths("example-org", base_root)
+    init_db(current_runtime.db_path)
+
+    auth_calls: list[Path] = []
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["example-org"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        original_sync_context_id = app._sync_context_id
+        await pilot.press("n")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert auth_calls == []
+        assert app._sync_context_id == original_sync_context_id
+        assert app.runtime == current_runtime
+        assert app.db_path == current_runtime.db_path
+
+
+async def test_repo_only_namespace_keeps_identity_and_noops_on_resubmit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = namespace_runtime_paths("example-org", base_root)
+    init_db(current_runtime.db_path)
+    ensure_workspace_config(
+        current_runtime,
+        seed=AgendumConfig(
+            orgs=[],
+            repos=["example-org/repo"],
+            exclude_repos=[],
+            sync_interval=9999,
+            seen_delay=3,
+        ),
+    )
+
+    auth_calls: list[Path] = []
+    monkeypatch.setattr("agendum.app.recover_gh_auth", lambda _gh_dir, source_dir=None: True)
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(
+            orgs=[],
+            repos=["example-org/repo"],
+            exclude_repos=[],
+            sync_interval=9999,
+            seen_delay=3,
+        ),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        assert app.current_namespace == "example-org"
+        await pilot.press("n")
+        await pilot.pause()
+
+        inp = app.query_one("#create-input", Input)
+        assert inp.value == "example-org"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert auth_calls == []
+        assert app.runtime == current_runtime
+        assert app.current_namespace == "example-org"
+
+
+async def test_switch_namespace_keeps_current_workspace_when_auth_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    init_db(current_runtime.db_path)
+
+    recover_calls: list[tuple[Path, Path | None]] = []
+    monkeypatch.setattr(
+        "agendum.app.recover_gh_auth",
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or False,
+    )
+    monkeypatch.setattr("agendum.app.auth_login", lambda _gh_dir: False)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["current"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+        inp = app.query_one("#create-input", Input)
+        inp.value = "example-org"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.runtime == current_runtime
+        assert recover_calls == [(
+            namespace_runtime_paths("example-org", base_root).gh_config_dir,
+            current_runtime.gh_config_dir,
+        )]
+        assert not namespace_runtime_paths("example-org", base_root).config_path.exists()
+        assert app._sync_error == "gh auth login failed"
+
+
+async def test_switch_namespace_blank_returns_to_base_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    base_runtime = runtime_paths(base_root)
+    init_db(base_runtime.db_path)
+    ensure_workspace_config(
+        base_runtime,
+        seed=AgendumConfig(orgs=["base-org"], sync_interval=9999, seen_delay=3),
+    )
+
+    current_runtime = namespace_runtime_paths("example-org", base_root)
+    init_db(current_runtime.db_path)
+
+    recover_calls: list[tuple[Path, Path | None]] = []
+    auth_calls: list[Path] = []
+    monkeypatch.setattr(
+        "agendum.app.recover_gh_auth",
+        lambda gh_dir, source_dir=None: recover_calls.append((gh_dir, source_dir)) or True,
+    )
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["example-org"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+
+        inp = app.query_one("#create-input", Input)
+        inp.value = ""
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert auth_calls == []
+        assert recover_calls == [(base_runtime.gh_config_dir, current_runtime.gh_config_dir)]
+        assert app.runtime == base_runtime
+        assert app.db_path == base_runtime.db_path
+        assert app.current_namespace is None
+        assert load_config(base_runtime.config_path).orgs == ["base-org"]
+
+
+async def test_switch_namespace_rejects_invalid_namespace_without_changing_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    init_db(current_runtime.db_path)
+
+    auth_calls: list[Path] = []
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["current"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+
+        inp = app.query_one("#create-input", Input)
+        inp.value = "!!!"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        notifications = list(app._notifications)
+        assert auth_calls == []
+        assert app.runtime == current_runtime
+        assert app.db_path == current_runtime.db_path
+        assert not (base_root / "workspaces").exists()
+        assert notifications[-1].severity == "error"
+        assert notifications[-1].message == "Invalid namespace: enter at least one letter or number."
+
+
+async def test_switch_namespace_rejects_owner_repo_input_without_changing_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    init_db(current_runtime.db_path)
+
+    auth_calls: list[Path] = []
+    monkeypatch.setattr("agendum.app.auth_login", lambda gh_dir: auth_calls.append(gh_dir) or True)
+    monkeypatch.setattr(AgendumApp, "suspend", lambda self: nullcontext())
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["current"], sync_interval=9999, seen_delay=3),
+    )
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+
+        inp = app.query_one("#create-input", Input)
+        inp.value = "owner/repo"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        notifications = list(app._notifications)
+        assert auth_calls == []
+        assert app.runtime == current_runtime
+        assert app.db_path == current_runtime.db_path
+        assert not (base_root / "workspaces").exists()
+        assert notifications[-1].severity == "error"
+        assert notifications[-1].message == "Invalid namespace: enter a GitHub owner name, not owner/repo."

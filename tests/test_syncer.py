@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -295,6 +296,56 @@ async def test_run_sync_reports_missing_gh_auth(tmp_db: Path, monkeypatch) -> No
     assert changes == 0
     assert attention is False
     assert error == "gh credentials expired"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+
+    from agendum import gh
+
+    workspace_gh_dir = tmp_db.parent / "gh"
+    switched_gh_dir = tmp_db.parent / "switched" / "gh"
+    observed_gh_dirs: list[Path | None] = []
+    switched = False
+
+    async def fake_run_gh(*args: str) -> str:
+        nonlocal switched
+        observed_gh_dirs.append(gh.get_gh_config_dir())
+        if not switched:
+            gh.set_gh_config_dir(switched_gh_dir)
+            switched = True
+
+        if args == ("api", "user", "--jq", ".login"):
+            return "author\n"
+        if args[:2] == ("api", "graphql"):
+            return json.dumps(authored_repo_payload(authored_prs=[]))
+        if args[:2] == ("api", "notifications"):
+            return "[]"
+        raise AssertionError(f"Unexpected gh call: {args}")
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    gh.set_gh_config_dir(workspace_gh_dir)
+    try:
+        changes, attention, error = await run_sync(
+            tmp_db,
+            AgendumConfig(repos=["example-org/example-repo"]),
+        )
+    finally:
+        gh.set_gh_config_dir(None)
+
+    assert changes == 0
+    assert attention is False
+    assert error is None
+    assert observed_gh_dirs == [
+        workspace_gh_dir,
+        workspace_gh_dir,
+        workspace_gh_dir,
+    ]
 
 
 @pytest.mark.asyncio

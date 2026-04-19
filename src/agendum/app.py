@@ -9,6 +9,7 @@ import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 log = logging.getLogger(__name__)
 
@@ -17,11 +18,20 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.app import ScreenStackError
 from textual.binding import Binding
+from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Input, Static
 from textual.widgets._data_table import ColumnKey
 from textual.worker import Worker, WorkerState
 
-from agendum.config import AgendumConfig, DB_PATH, ensure_config
+from agendum.config import (
+    AgendumConfig,
+    RuntimePaths,
+    default_runtime_paths,
+    ensure_workspace_config,
+    workspace_runtime_paths,
+    runtime_base_dir,
+    runtime_paths,
+)
 from agendum.db import (
     add_task,
     get_active_tasks,
@@ -30,6 +40,7 @@ from agendum.db import (
     remove_task,
     update_task,
 )
+from agendum.gh import auth_login, recover_gh_auth, set_gh_config_dir
 from agendum.syncer import run_sync
 from agendum.widgets import (
     ActionModal,
@@ -122,17 +133,32 @@ class AgendumApp(App):
         Binding("q", "quit", "Quit"),
         Binding("r", "force_sync", "Sync"),
         Binding("c", "create_task", "Create", show=True),
+        Binding("n", "switch_namespace", "Namespace", show=True),
         Binding("escape", "cancel_input", "Cancel", show=False),
     ]
 
     def __init__(
         self,
         *,
+        runtime: RuntimePaths | None = None,
+        workspace_base_dir: Path | None = None,
         db_path: Path | None = None,
         config: AgendumConfig | None = None,
     ) -> None:
         super().__init__()
-        self._db_path = db_path or DB_PATH
+        self._runtime = runtime or (
+            runtime_paths(db_path.parent) if db_path is not None else default_runtime_paths()
+        )
+        if db_path is not None:
+            self._runtime = RuntimePaths(
+                workspace_root=self._runtime.workspace_root,
+                config_path=self._runtime.config_path,
+                db_path=db_path,
+                gh_config_dir=self._runtime.gh_config_dir,
+            )
+        self._workspace_base_dir = workspace_base_dir or runtime_base_dir(self._runtime)
+        self._db_path = self._runtime.db_path
+        set_gh_config_dir(self._runtime.gh_config_dir)
         self._config = config  # resolved in on_mount if None
         self._task_rows: list[dict | None] = []  # None = section header
         self._last_sync: datetime | None = None
@@ -146,10 +172,30 @@ class AgendumApp(App):
         self._suspended = False
         self._wake_retry_count: int = 0
         self._title_width_chars: int = 10
+        self._input_mode: Literal["create", "namespace"] | None = None
+        self._sync_timer: Timer | None = None
+        self._spinner_timer: Timer | None = None
+        self._status_timer: Timer | None = None
+        self._seen_timer: Timer | None = None
+        self._sync_context_id = 0
 
     @property
     def db_path(self) -> Path:
         return self._db_path
+
+    @property
+    def runtime(self) -> RuntimePaths:
+        return self._runtime
+
+    @property
+    def current_namespace(self) -> str | None:
+        if self._runtime.workspace_root == self._workspace_base_dir:
+            return None
+        if self._runtime.workspace_root.parent.name == "workspaces":
+            return self._runtime.workspace_root.name
+        if self._config and self._config.orgs:
+            return self._config.orgs[0]
+        return None
 
     # ── compose ──────────────────────────────────────────────────────
 
@@ -255,7 +301,7 @@ class AgendumApp(App):
 
     async def on_mount(self) -> None:
         if self._config is None:
-            self._config = ensure_config()
+            self._config = ensure_workspace_config(self._runtime)
 
         init_db(self._db_path)
 
@@ -273,9 +319,9 @@ class AgendumApp(App):
         self._enable_focus_reporting()
         # Run initial sync immediately, then on interval
         self._start_sync()
-        self.set_interval(self._config.sync_interval, self._start_sync)
-        self.set_interval(0.25, self._tick_initial_sync_spinner)
-        self.set_interval(10, self._update_status_bar)
+        self._sync_timer = self.set_interval(self._config.sync_interval, self._start_sync)
+        self._spinner_timer = self.set_interval(0.25, self._tick_initial_sync_spinner)
+        self._status_timer = self.set_interval(10, self._update_status_bar)
 
     def on_resize(self, event: events.Resize) -> None:
         """Recompute title column width when terminal is resized."""
@@ -379,8 +425,10 @@ class AgendumApp(App):
         total = len(tasks)
         unseen_str = f" — {unseen} new" if unseen else ""
         sync_status = self._format_sync_status()
+        namespace = self.current_namespace
+        namespace_str = f" [{namespace}]" if namespace else ""
         self.query_one("#status-bar", Static).update(
-            f"agendum — {sync_status} — {total} tasks{unseen_str}"
+            f"agendum{namespace_str} — {sync_status} — {total} tasks{unseen_str}"
         )
 
     def _format_sync_status(self) -> str:
@@ -416,19 +464,48 @@ class AgendumApp(App):
     # ── input toggle ────────────────────────────────────────────────
 
     def action_create_task(self) -> None:
-        """Show the create-input and focus it."""
-        inp = self.query_one("#create-input", Input)
-        inp.add_class("visible")
-        inp.value = ""
-        inp.focus()
+        """Show the command input for task creation."""
+        self._show_input(
+            mode="create",
+            placeholder="type to create a new task…",
+            value="",
+        )
         self.notify("Type a task title, Enter to save, Escape to cancel", timeout=3)
+
+    def action_switch_namespace(self) -> None:
+        """Show the command input for namespace switching."""
+        self._show_input(
+            mode="namespace",
+            placeholder="GitHub namespace (blank for base workspace)…",
+            value=self.current_namespace or "",
+        )
+        self.notify(
+            "Enter a GitHub namespace, or submit blank for the base workspace",
+            timeout=3,
+        )
 
     def action_cancel_input(self) -> None:
         """Hide the create-input and return focus to the table."""
+        self._input_mode = None
         inp = self.query_one("#create-input", Input)
         inp.remove_class("visible")
         inp.clear()
+        inp.placeholder = "type to create a new task…"
         self.query_one(DataTable).focus()
+
+    def _show_input(
+        self,
+        *,
+        mode: Literal["create", "namespace"],
+        placeholder: str,
+        value: str,
+    ) -> None:
+        self._input_mode = mode
+        inp = self.query_one("#create-input", Input)
+        inp.placeholder = placeholder
+        inp.add_class("visible")
+        inp.value = value
+        inp.focus()
 
     # ── row selection ────────────────────────────────────────────────
 
@@ -468,17 +545,82 @@ class AgendumApp(App):
     # ── task creation via input ──────────────────────────────────────
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        title = event.value.strip()
-        if not title:
+        mode = self._input_mode
+        value = event.value.strip()
+        if mode != "namespace" and not value:
             self.action_cancel_input()
             return
-        add_task(self._db_path, title=title, source="manual", status="active")
-        event.input.clear()
-        event.input.remove_class("visible")
-        self.query_one(DataTable).focus()
+        self.action_cancel_input()
+        if mode == "namespace":
+            self._switch_namespace(value or None)
+            return
+
+        add_task(self._db_path, title=value, source="manual", status="active")
         self.refresh_table()
 
+    def _switch_namespace(self, namespace: str | None) -> None:
+        try:
+            target_runtime = workspace_runtime_paths(namespace, self._workspace_base_dir)
+        except ValueError as exc:
+            self.notify(
+                f"Invalid namespace: {str(exc).rstrip('.')}.",
+                severity="error",
+                timeout=5,
+            )
+            return
+
+        if target_runtime == self._runtime:
+            return
+
+        target_namespace = namespace or None
+        if not recover_gh_auth(
+            target_runtime.gh_config_dir,
+            source_dir=self._runtime.gh_config_dir,
+        ):
+            with self.suspend():
+                authenticated = auth_login(target_runtime.gh_config_dir)
+            if not authenticated:
+                self._sync_error = "gh auth login failed"
+                self._update_status_bar()
+                return
+
+        config = ensure_workspace_config(
+            target_runtime,
+            namespace=target_namespace,
+            seed=self._config,
+        )
+        self._apply_runtime(target_runtime, config)
+        self.notify(f"Switched to {target_namespace or 'base workspace'}", timeout=3)
+
+    def _apply_runtime(self, runtime: RuntimePaths, config: AgendumConfig) -> None:
+        self._runtime = runtime
+        self._db_path = runtime.db_path
+        set_gh_config_dir(runtime.gh_config_dir)
+        self._config = config
+        init_db(self._db_path)
+        self._sync_context_id += 1
+        self._cancel_seen_timer()
+        self._last_sync = None
+        self._sync_error = None
+        self._sync_in_progress = False
+        self._sync_spinner_frame = 0
+        self._last_sync_mono = time.monotonic()
+        self._last_sync_wall = time.time()
+        self._suspended = False
+        self._wake_retry_count = 0
+        if self._sync_timer is not None:
+            self._sync_timer.stop()
+            self._sync_timer = self.set_interval(self._config.sync_interval, self._start_sync)
+        if self._app_focused:
+            self._schedule_mark_seen()
+        self.refresh_table()
+        self._update_status_bar()
+        self._start_sync()
+
     # ── sync ─────────────────────────────────────────────────────────
+
+    def _sync_group(self) -> str:
+        return f"sync:{self._sync_context_id}"
 
     def _start_sync(self) -> None:
         """Kick off a sync in a background worker.
@@ -524,7 +666,11 @@ class AgendumApp(App):
         self._sync_in_progress = True
         self._sync_spinner_frame = 0
         self._update_status_bar()
-        self.run_worker(self._do_sync(), exclusive=True, group="sync")
+        self.run_worker(
+            self._do_sync(self._sync_context_id, self._db_path, self._config),
+            exclusive=True,
+            group=self._sync_group(),
+        )
 
     def _retry_sync_after_wake(self) -> None:
         """Attempt a sync as part of the wake retry sequence."""
@@ -533,7 +679,11 @@ class AgendumApp(App):
         self._sync_in_progress = True
         self._sync_spinner_frame = 0
         self._update_status_bar()
-        self.run_worker(self._do_sync(), exclusive=True, group="sync")
+        self.run_worker(
+            self._do_sync(self._sync_context_id, self._db_path, self._config),
+            exclusive=True,
+            group=self._sync_group(),
+        )
 
     def _handle_wake_retry_failure(self) -> None:
         """Schedule the next wake-retry attempt with exponential backoff."""
@@ -558,13 +708,19 @@ class AgendumApp(App):
         self._suspended = False
         self._wake_retry_count = 0
 
-    async def _do_sync(self) -> tuple[int, bool, str | None]:
+    async def _do_sync(
+        self,
+        sync_context_id: int,
+        db_path: Path,
+        config: AgendumConfig,
+    ) -> tuple[int, int, bool, str | None]:
         """Run sync in a worker thread — does not touch UI."""
-        return await run_sync(self._db_path, self._config)
+        changes, attention, error = await run_sync(db_path, config)
+        return sync_context_id, changes, attention, error
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Handle sync worker completion."""
-        if event.worker.group != "sync":
+        if event.worker.group != self._sync_group():
             return
         self._sync_in_progress = False
         if event.state != WorkerState.SUCCESS:
@@ -576,7 +732,7 @@ class AgendumApp(App):
                 else:
                     self._update_status_bar()
             return
-        changes, attention, error = event.worker.result
+        _, changes, attention, error = event.worker.result
         self._last_sync = datetime.now(timezone.utc)
         self._sync_error = error
         if self._suspended:
@@ -613,11 +769,32 @@ class AgendumApp(App):
 
     def on_app_focus(self) -> None:
         self._app_focused = True
-        if self._config:
-            self.set_timer(self._config.seen_delay, self._mark_seen)
+        self._schedule_mark_seen()
 
     def on_app_blur(self) -> None:
         self._app_focused = False
+        self._cancel_seen_timer()
+
+    def _schedule_mark_seen(self) -> None:
+        self._cancel_seen_timer()
+        if self._config is None:
+            return
+
+        sync_context_id = self._sync_context_id
+        db_path = self._db_path
+
+        def mark_seen_for_context() -> None:
+            if sync_context_id == self._sync_context_id:
+                self._seen_timer = None
+            self._mark_seen(db_path, sync_context_id)
+
+        self._seen_timer = self.set_timer(self._config.seen_delay, mark_seen_for_context)
+
+    def _cancel_seen_timer(self) -> None:
+        if self._seen_timer is None:
+            return
+        self._seen_timer.stop()
+        self._seen_timer = None
 
     def _disable_focus_reporting(self) -> None:
         try:
@@ -627,9 +804,10 @@ class AgendumApp(App):
             pass
 
     def on_unmount(self) -> None:
+        self._cancel_seen_timer()
         self._disable_focus_reporting()
 
-    def _mark_seen(self) -> None:
-        if self._app_focused:
-            mark_all_seen(self._db_path)
+    def _mark_seen(self, db_path: Path, sync_context_id: int) -> None:
+        if self._app_focused and sync_context_id == self._sync_context_id:
+            mark_all_seen(db_path)
             self.refresh_table()

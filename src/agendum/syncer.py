@@ -102,6 +102,21 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
         log.warning("No orgs or repos configured — skipping sync")
         return 0, False, None
 
+    with gh.use_gh_config_dir(_workspace_gh_config_dir(db_path)):
+        return await _run_sync_once(db_path, config)
+
+
+def _workspace_gh_config_dir(db_path: Path) -> Path:
+    """Map a workspace DB path to its colocated gh auth/config directory."""
+    return db_path.parent / "gh"
+
+
+async def _run_sync_once(
+    db_path: Path,
+    config: AgendumConfig,
+) -> tuple[int, bool, str | None]:
+    """Execute a full sync cycle with the gh workspace already bound."""
+
     gh_user = await gh.get_gh_username()
     if not gh_user:
         log.error("Could not determine GitHub username")
@@ -238,6 +253,10 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
     await asyncio.gather(*(fetch_one_repo(r) for r in repos))
 
     review_prs, review_fetch_ok = await gh.discover_review_prs(config.orgs, gh_user)
+    if config.repos and not config.orgs:
+        # Repo-only workspaces do not currently have repo-scoped review discovery,
+        # so review cleanup cannot be treated as complete.
+        review_fetch_ok = False
     for pr_info in review_prs:
         repo_info = pr_info.get("repository", {})
         repo_full = repo_info.get("nameWithOwner", "")

@@ -322,6 +322,62 @@ async def test_run_sync_preserves_review_tasks_when_review_fetch_fails(
     assert task["status"] == "review requested", "Review task should not be closed when review fetch failed"
 
 
+async def test_run_sync_repo_only_preserves_review_tasks_without_review_discovery(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/pull/11"
+    add_task(
+        tmp_db,
+        title="Review PR",
+        source="pr_review",
+        status="review requested",
+        gh_url=url,
+        gh_repo="org/repo",
+    )
+
+    async def fake_get_gh_username() -> str:
+        return "reviewer"
+
+    async def fake_fetch_repo_data(owner, name, gh_user) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "openIssues": {"nodes": []},
+                    "closedIssues": {"nodes": []},
+                    "authoredPRs": {"nodes": []},
+                    "mergedPRs": {"nodes": []},
+                    "closedPRs": {"nodes": []},
+                },
+            },
+        }
+
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        assert orgs == []
+        return [], True
+
+    async def fake_fetch_notifications(gh_user) -> list:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(repos=["org/repo"]))
+
+    assert changes == 0
+    assert attention is False
+    assert error is None
+    task = find_task_by_gh_url(tmp_db, url)
+    assert task is not None
+    assert task["status"] == "review requested"
+
+
 async def test_run_sync_closes_review_pr_as_done(
     tmp_db: Path, monkeypatch,
 ) -> None:
@@ -361,7 +417,7 @@ async def test_run_sync_closes_review_pr_as_done(
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
 
     changes, attention, error = await run_sync(
-        tmp_db, AgendumConfig(repos=["org/repo"]),
+        tmp_db, AgendumConfig(orgs=["org"], repos=["org/repo"]),
     )
 
     task = find_task_by_gh_url(tmp_db, url)

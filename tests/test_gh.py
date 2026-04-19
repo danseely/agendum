@@ -1,13 +1,25 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 from agendum.gh import (
+    auth_status,
+    auth_login,
+    recover_gh_auth,
+    default_gh_config_dir,
     derive_authored_pr_status,
     derive_review_pr_status,
     derive_issue_status,
     fetch_review_detail,
+    get_gh_config_dir,
+    _run_gh,
     parse_author_first_name,
     extract_repo_short_name,
+    refresh_gh_config_dir,
+    seed_gh_config_dir,
+    set_gh_config_dir,
+    use_gh_config_dir,
 )
 
 
@@ -256,6 +268,277 @@ def test_authored_pr_review_received_clears_after_push_without_feedback_threads(
 
 def test_review_pr_requested() -> None:
     assert derive_review_pr_status(user_has_reviewed=False, new_commits_since_review=False) == "review requested"
+
+
+def test_auth_login_uses_isolated_gh_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    def fake_run(args, *, env, check):
+        calls["args"] = args
+        calls["env"] = env
+        calls["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("agendum.gh.subprocess.run", fake_run)
+
+    gh_dir = tmp_path / "workspace" / "gh"
+    assert auth_login(gh_dir) is True
+    assert gh_dir.is_dir()
+    assert calls["args"] == ["gh", "auth", "login"]
+    assert calls["env"]["GH_CONFIG_DIR"] == str(gh_dir)
+    assert calls["check"] is False
+
+
+def test_auth_status_uses_isolated_gh_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    def fake_run(args, *, capture_output, text, env, check):
+        calls["args"] = args
+        calls["capture_output"] = capture_output
+        calls["text"] = text
+        calls["env"] = env
+        calls["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("agendum.gh.subprocess.run", fake_run)
+
+    gh_dir = tmp_path / "workspace" / "gh"
+    assert auth_status(gh_dir) is True
+    assert calls["args"] == ["gh", "auth", "status"]
+    assert calls["capture_output"] is True
+    assert calls["text"] is True
+    assert calls["env"]["GH_CONFIG_DIR"] == str(gh_dir)
+    assert calls["check"] is False
+
+
+def test_default_gh_config_dir_prefers_xdg_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert default_gh_config_dir() == tmp_path / "xdg" / "gh"
+
+
+def test_seed_gh_config_dir_copies_default_auth_files(tmp_path) -> None:
+    source_dir = tmp_path / "source-gh"
+    source_dir.mkdir()
+    (source_dir / "hosts.yml").write_text("github.com:\n  oauth_token: token\n")
+    (source_dir / "config.yml").write_text("git_protocol: ssh\n")
+
+    target_dir = tmp_path / "workspace-gh"
+    seed_gh_config_dir(target_dir, source_dir=source_dir)
+
+    assert (target_dir / "hosts.yml").read_text() == (source_dir / "hosts.yml").read_text()
+    assert (target_dir / "config.yml").read_text() == (source_dir / "config.yml").read_text()
+    assert (target_dir / "hosts.yml").stat().st_mode & 0o777 == 0o600
+    assert (target_dir / "config.yml").stat().st_mode & 0o777 == 0o600
+
+
+def test_seed_gh_config_dir_preserves_existing_workspace_auth(tmp_path) -> None:
+    source_dir = tmp_path / "source-gh"
+    source_dir.mkdir()
+    (source_dir / "hosts.yml").write_text("github.com:\n  oauth_token: old\n")
+
+    target_dir = tmp_path / "workspace-gh"
+    target_dir.mkdir()
+    (target_dir / "hosts.yml").write_text("github.com:\n  oauth_token: current\n")
+
+    seed_gh_config_dir(target_dir, source_dir=source_dir)
+
+    assert (target_dir / "hosts.yml").read_text() == "github.com:\n  oauth_token: current\n"
+
+
+def test_refresh_gh_config_dir_overwrites_existing_workspace_auth(tmp_path) -> None:
+    source_dir = tmp_path / "source-gh"
+    source_dir.mkdir()
+    (source_dir / "hosts.yml").write_text("github.com:\n  oauth_token: fresh\n")
+    (source_dir / "config.yml").write_text("git_protocol: ssh\n")
+
+    target_dir = tmp_path / "workspace-gh"
+    target_dir.mkdir()
+    (target_dir / "hosts.yml").write_text("github.com:\n  oauth_token: stale\n")
+    (target_dir / "config.yml").write_text("git_protocol: https\n")
+
+    refresh_gh_config_dir(target_dir, source_dir=source_dir)
+
+    assert (target_dir / "hosts.yml").read_text() == "github.com:\n  oauth_token: fresh\n"
+    assert (target_dir / "config.yml").read_text() == "git_protocol: ssh\n"
+
+
+def test_recover_gh_auth_prefers_valid_workspace_auth(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "default" / "gh"
+
+    refresh_calls: list[tuple[Path, Path | None]] = []
+    login_calls: list[Path] = []
+
+    monkeypatch.setattr("agendum.gh.auth_status", lambda path=None: path == gh_dir)
+    monkeypatch.setattr(
+        "agendum.gh.refresh_gh_config_dir",
+        lambda target, source_dir=None: refresh_calls.append((target, source_dir)),
+    )
+    monkeypatch.setattr("agendum.gh.auth_login", lambda target: login_calls.append(target) or True)
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir, interactive=True) is True
+    assert refresh_calls == []
+    assert login_calls == []
+
+
+def test_recover_gh_auth_refreshes_workspace_from_default_auth(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "default" / "gh"
+    status_by_dir = {
+        gh_dir: False,
+        source_dir: True,
+    }
+    refresh_calls: list[tuple[Path, Path | None]] = []
+
+    def fake_auth_status(path=None):
+        return status_by_dir.get(path, False)
+
+    def fake_refresh(target, source_dir=None):
+        refresh_calls.append((target, source_dir))
+        status_by_dir[target] = True
+
+    monkeypatch.setattr("agendum.gh.auth_status", fake_auth_status)
+    monkeypatch.setattr("agendum.gh.refresh_gh_config_dir", fake_refresh)
+    monkeypatch.setattr("agendum.gh.auth_login", lambda _target: pytest.fail("unexpected interactive login"))
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir) is True
+    assert refresh_calls == [(gh_dir, source_dir)]
+
+
+def test_recover_gh_auth_prefers_current_workspace_auth_before_default(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "target" / "gh"
+    source_dir = tmp_path / "current" / "gh"
+    default_dir = tmp_path / "default" / "gh"
+    status_by_dir = {
+        gh_dir: False,
+        source_dir: True,
+        default_dir: False,
+    }
+    refresh_calls: list[tuple[Path, Path | None]] = []
+
+    def fake_auth_status(path=None):
+        return status_by_dir.get(path, False)
+
+    def fake_refresh(target, source_dir=None):
+        refresh_calls.append((target, source_dir))
+        status_by_dir[target] = True
+
+    monkeypatch.setattr("agendum.gh.auth_status", fake_auth_status)
+    monkeypatch.setattr("agendum.gh.refresh_gh_config_dir", fake_refresh)
+    monkeypatch.setattr("agendum.gh.default_gh_config_dir", lambda: default_dir)
+    monkeypatch.setattr("agendum.gh.auth_login", lambda _target: pytest.fail("unexpected interactive login"))
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir) is True
+    assert refresh_calls == [(gh_dir, source_dir)]
+
+
+def test_recover_gh_auth_falls_back_to_interactive_login(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "default" / "gh"
+    login_calls: list[Path] = []
+
+    monkeypatch.setattr("agendum.gh.auth_status", lambda path=None: False)
+    monkeypatch.setattr(
+        "agendum.gh.refresh_gh_config_dir",
+        lambda _target, source_dir=None: pytest.fail(f"unexpected refresh from {source_dir}"),
+    )
+    monkeypatch.setattr("agendum.gh.auth_login", lambda target: login_calls.append(target) or True)
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir, interactive=True) is True
+    assert login_calls == [gh_dir]
+
+
+def test_recover_gh_auth_force_refreshes_even_when_workspace_auth_exists(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "current" / "gh"
+    status_by_dir = {
+        gh_dir: True,
+        source_dir: True,
+    }
+    refresh_calls: list[tuple[Path, Path | None]] = []
+
+    def fake_auth_status(path=None):
+        return status_by_dir.get(path, False)
+
+    def fake_refresh(target, source_dir=None):
+        refresh_calls.append((target, source_dir))
+
+    monkeypatch.setattr("agendum.gh.auth_status", fake_auth_status)
+    monkeypatch.setattr("agendum.gh.refresh_gh_config_dir", fake_refresh)
+    monkeypatch.setattr("agendum.gh.auth_login", lambda _target: pytest.fail("unexpected interactive login"))
+
+    assert recover_gh_auth(
+        gh_dir,
+        source_dir=source_dir,
+        interactive=True,
+        force_refresh=True,
+    ) is True
+    assert refresh_calls == [(gh_dir, source_dir)]
+
+
+@pytest.mark.asyncio
+async def test_run_gh_uses_active_workspace_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("agendum.gh.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    gh_dir = tmp_path / "workspace" / "gh"
+    set_gh_config_dir(gh_dir)
+    try:
+        assert await _run_gh("api", "user", "--jq", ".login") == "ok\n"
+    finally:
+        set_gh_config_dir(None)
+
+    assert calls["args"] == ("gh", "api", "user", "--jq", ".login")
+    assert calls["kwargs"]["env"]["GH_CONFIG_DIR"] == str(gh_dir)
+
+
+@pytest.mark.asyncio
+async def test_run_gh_prefers_task_local_workspace_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("agendum.gh.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    global_dir = tmp_path / "global" / "gh"
+    task_dir = tmp_path / "task" / "gh"
+    set_gh_config_dir(global_dir)
+    try:
+        with use_gh_config_dir(task_dir):
+            assert get_gh_config_dir() == task_dir
+            assert await _run_gh("api", "user", "--jq", ".login") == "ok\n"
+        assert get_gh_config_dir() == global_dir
+    finally:
+        set_gh_config_dir(None)
+
+    assert calls["args"] == ("gh", "api", "user", "--jq", ".login")
+    assert calls["kwargs"]["env"]["GH_CONFIG_DIR"] == str(task_dir)
 
 
 def test_review_pr_reviewed() -> None:
