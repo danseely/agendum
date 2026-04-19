@@ -11,6 +11,7 @@ from pathlib import Path
 from agendum import __version__
 from agendum.config import CONFIG_DIR, CONFIG_PATH, DB_PATH, DEFAULT_CONFIG, ensure_config, runtime_paths
 from agendum.demo import run_demo_screenshots
+from agendum.gh import seed_gh_config_dir
 
 
 def check_gh_cli() -> bool:
@@ -105,6 +106,7 @@ def main() -> None:
     if not paths.config_path.exists() or not paths.db_path.exists():
         first_run_setup(paths.config_path)
 
+    seed_gh_config_dir(paths.gh_config_dir)
     config = ensure_config(paths.config_path)
 
     from agendum.app import AgendumApp

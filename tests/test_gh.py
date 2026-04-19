@@ -4,14 +4,18 @@ import pytest
 
 from agendum.gh import (
     auth_login,
+    default_gh_config_dir,
     derive_authored_pr_status,
     derive_review_pr_status,
     derive_issue_status,
     fetch_review_detail,
+    get_gh_config_dir,
     _run_gh,
     parse_author_first_name,
     extract_repo_short_name,
+    seed_gh_config_dir,
     set_gh_config_dir,
+    use_gh_config_dir,
 )
 
 
@@ -281,6 +285,42 @@ def test_auth_login_uses_isolated_gh_config_dir(tmp_path, monkeypatch) -> None:
     assert calls["check"] is False
 
 
+def test_default_gh_config_dir_prefers_xdg_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert default_gh_config_dir() == tmp_path / "xdg" / "gh"
+
+
+def test_seed_gh_config_dir_copies_default_auth_files(tmp_path) -> None:
+    source_dir = tmp_path / "source-gh"
+    source_dir.mkdir()
+    (source_dir / "hosts.yml").write_text("github.com:\n  oauth_token: token\n")
+    (source_dir / "config.yml").write_text("git_protocol: ssh\n")
+
+    target_dir = tmp_path / "workspace-gh"
+    seed_gh_config_dir(target_dir, source_dir=source_dir)
+
+    assert (target_dir / "hosts.yml").read_text() == (source_dir / "hosts.yml").read_text()
+    assert (target_dir / "config.yml").read_text() == (source_dir / "config.yml").read_text()
+    assert (target_dir / "hosts.yml").stat().st_mode & 0o777 == 0o600
+    assert (target_dir / "config.yml").stat().st_mode & 0o777 == 0o600
+
+
+def test_seed_gh_config_dir_preserves_existing_workspace_auth(tmp_path) -> None:
+    source_dir = tmp_path / "source-gh"
+    source_dir.mkdir()
+    (source_dir / "hosts.yml").write_text("github.com:\n  oauth_token: old\n")
+
+    target_dir = tmp_path / "workspace-gh"
+    target_dir.mkdir()
+    (target_dir / "hosts.yml").write_text("github.com:\n  oauth_token: current\n")
+
+    seed_gh_config_dir(target_dir, source_dir=source_dir)
+
+    assert (target_dir / "hosts.yml").read_text() == "github.com:\n  oauth_token: current\n"
+
+
 @pytest.mark.asyncio
 async def test_run_gh_uses_active_workspace_config_dir(tmp_path, monkeypatch) -> None:
     calls = {}
@@ -307,6 +347,38 @@ async def test_run_gh_uses_active_workspace_config_dir(tmp_path, monkeypatch) ->
 
     assert calls["args"] == ("gh", "api", "user", "--jq", ".login")
     assert calls["kwargs"]["env"]["GH_CONFIG_DIR"] == str(gh_dir)
+
+
+@pytest.mark.asyncio
+async def test_run_gh_prefers_task_local_workspace_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr("agendum.gh.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    global_dir = tmp_path / "global" / "gh"
+    task_dir = tmp_path / "task" / "gh"
+    set_gh_config_dir(global_dir)
+    try:
+        with use_gh_config_dir(task_dir):
+            assert get_gh_config_dir() == task_dir
+            assert await _run_gh("api", "user", "--jq", ".login") == "ok\n"
+        assert get_gh_config_dir() == global_dir
+    finally:
+        set_gh_config_dir(None)
+
+    assert calls["args"] == ("gh", "api", "user", "--jq", ".login")
+    assert calls["kwargs"]["env"]["GH_CONFIG_DIR"] == str(task_dir)
 
 
 def test_review_pr_reviewed() -> None:

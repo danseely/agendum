@@ -551,7 +551,15 @@ class AgendumApp(App):
         self.refresh_table()
 
     def _switch_namespace(self, namespace: str) -> None:
-        target_runtime = namespace_runtime_paths(namespace, self._workspace_base_dir)
+        try:
+            target_runtime = namespace_runtime_paths(namespace, self._workspace_base_dir)
+        except ValueError:
+            self.notify(
+                "Invalid namespace: enter at least one letter or number.",
+                severity="error",
+                timeout=5,
+            )
+            return
         with self.suspend():
             authenticated = auth_login(target_runtime.gh_config_dir)
         if not authenticated:

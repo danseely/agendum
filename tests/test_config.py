@@ -1,4 +1,7 @@
 from pathlib import Path
+
+import pytest
+
 from agendum.config import (
     DEFAULT_CONFIG,
     AgendumConfig,
@@ -72,6 +75,11 @@ def test_namespace_runtime_paths_are_nested_under_workspaces(tmp_path: Path) -> 
 
     assert paths.workspace_root == tmp_path / ".agendum" / "workspaces" / "example-org"
     assert runtime_base_dir(paths) == tmp_path / ".agendum"
+
+
+def test_namespace_runtime_paths_rejects_normalized_empty_namespace(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="at least one letter or number"):
+        namespace_runtime_paths("!!!", tmp_path / ".agendum")
 
 
 def test_ensure_workspace_config_seeds_namespace_and_timing(tmp_path: Path) -> None:

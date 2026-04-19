@@ -182,5 +182,5 @@ def _namespace_directory_name(namespace: str) -> str:
     normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
     normalized = normalized.strip(".-")
     if not normalized:
-        raise ValueError("namespace must not be empty")
+        raise ValueError("namespace must include at least one letter or number")
     return normalized

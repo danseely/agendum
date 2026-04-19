@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import logging
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, cast
 
 log = logging.getLogger(__name__)
 _GH_CONFIG_DIR: Path | None = None
+_GH_CONFIG_DIR_UNSET = object()
+_GH_CONFIG_FILES = ("hosts.yml", "config.yml")
+_TASK_GH_CONFIG_DIR: ContextVar[Path | None | object] = ContextVar(
+    "agendum_task_gh_config_dir",
+    default=_GH_CONFIG_DIR_UNSET,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +200,9 @@ def has_unacknowledged_review_feedback(
 async def _run_gh(*args: str) -> str:
     """Run a gh CLI command and return stdout."""
     env = os.environ.copy()
-    if _GH_CONFIG_DIR is not None:
-        env["GH_CONFIG_DIR"] = str(_GH_CONFIG_DIR)
+    gh_config_dir = get_gh_config_dir()
+    if gh_config_dir is not None:
+        env["GH_CONFIG_DIR"] = str(gh_config_dir)
     proc = await asyncio.create_subprocess_exec(
         "gh", *args,
         stdout=asyncio.subprocess.PIPE,
@@ -228,6 +238,49 @@ def set_gh_config_dir(gh_config_dir: Path | None) -> None:
     """Configure the gh subprocess environment for the active workspace."""
     global _GH_CONFIG_DIR
     _GH_CONFIG_DIR = gh_config_dir
+
+
+def default_gh_config_dir() -> Path:
+    """Return gh's default config directory for this environment."""
+    if gh_config_dir := os.environ.get("GH_CONFIG_DIR"):
+        return Path(gh_config_dir)
+    if xdg_config_home := os.environ.get("XDG_CONFIG_HOME"):
+        return Path(xdg_config_home) / "gh"
+    return Path.home() / ".config" / "gh"
+
+
+def seed_gh_config_dir(gh_config_dir: Path, source_dir: Path | None = None) -> None:
+    """Copy the user's existing gh auth/config into a workspace-local gh dir."""
+    gh_config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    source_dir = source_dir or default_gh_config_dir()
+    if source_dir == gh_config_dir:
+        return
+
+    for filename in _GH_CONFIG_FILES:
+        source_path = source_dir / filename
+        target_path = gh_config_dir / filename
+        if target_path.exists() or not source_path.exists():
+            continue
+        shutil.copy2(source_path, target_path)
+        os.chmod(target_path, 0o600)
+
+
+def get_gh_config_dir() -> Path | None:
+    """Return the effective gh config dir for the current task."""
+    gh_config_dir = _TASK_GH_CONFIG_DIR.get()
+    if gh_config_dir is _GH_CONFIG_DIR_UNSET:
+        return _GH_CONFIG_DIR
+    return cast(Path | None, gh_config_dir)
+
+
+@contextmanager
+def use_gh_config_dir(gh_config_dir: Path | None) -> Iterator[None]:
+    """Temporarily bind a gh config dir to the current async task tree."""
+    token = _TASK_GH_CONFIG_DIR.set(gh_config_dir)
+    try:
+        yield
+    finally:
+        _TASK_GH_CONFIG_DIR.reset(token)
 
 
 # ---------------------------------------------------------------------------
