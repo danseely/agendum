@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from agendum.gh import (
+    auth_status,
     auth_login,
+    recover_gh_auth,
     default_gh_config_dir,
     derive_authored_pr_status,
     derive_review_pr_status,
@@ -13,6 +15,7 @@ from agendum.gh import (
     _run_gh,
     parse_author_first_name,
     extract_repo_short_name,
+    refresh_gh_config_dir,
     seed_gh_config_dir,
     set_gh_config_dir,
     use_gh_config_dir,
@@ -285,6 +288,28 @@ def test_auth_login_uses_isolated_gh_config_dir(tmp_path, monkeypatch) -> None:
     assert calls["check"] is False
 
 
+def test_auth_status_uses_isolated_gh_config_dir(tmp_path, monkeypatch) -> None:
+    calls = {}
+
+    def fake_run(args, *, capture_output, text, env, check):
+        calls["args"] = args
+        calls["capture_output"] = capture_output
+        calls["text"] = text
+        calls["env"] = env
+        calls["check"] = check
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("agendum.gh.subprocess.run", fake_run)
+
+    gh_dir = tmp_path / "workspace" / "gh"
+    assert auth_status(gh_dir) is True
+    assert calls["args"] == ["gh", "auth", "status"]
+    assert calls["capture_output"] is True
+    assert calls["text"] is True
+    assert calls["env"]["GH_CONFIG_DIR"] == str(gh_dir)
+    assert calls["check"] is False
+
+
 def test_default_gh_config_dir_prefers_xdg_env(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -319,6 +344,82 @@ def test_seed_gh_config_dir_preserves_existing_workspace_auth(tmp_path) -> None:
     seed_gh_config_dir(target_dir, source_dir=source_dir)
 
     assert (target_dir / "hosts.yml").read_text() == "github.com:\n  oauth_token: current\n"
+
+
+def test_refresh_gh_config_dir_overwrites_existing_workspace_auth(tmp_path) -> None:
+    source_dir = tmp_path / "source-gh"
+    source_dir.mkdir()
+    (source_dir / "hosts.yml").write_text("github.com:\n  oauth_token: fresh\n")
+    (source_dir / "config.yml").write_text("git_protocol: ssh\n")
+
+    target_dir = tmp_path / "workspace-gh"
+    target_dir.mkdir()
+    (target_dir / "hosts.yml").write_text("github.com:\n  oauth_token: stale\n")
+    (target_dir / "config.yml").write_text("git_protocol: https\n")
+
+    refresh_gh_config_dir(target_dir, source_dir=source_dir)
+
+    assert (target_dir / "hosts.yml").read_text() == "github.com:\n  oauth_token: fresh\n"
+    assert (target_dir / "config.yml").read_text() == "git_protocol: ssh\n"
+
+
+def test_recover_gh_auth_prefers_valid_workspace_auth(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "default" / "gh"
+
+    refresh_calls: list[tuple[Path, Path | None]] = []
+    login_calls: list[Path] = []
+
+    monkeypatch.setattr("agendum.gh.auth_status", lambda path=None: path == gh_dir)
+    monkeypatch.setattr(
+        "agendum.gh.refresh_gh_config_dir",
+        lambda target, source_dir=None: refresh_calls.append((target, source_dir)),
+    )
+    monkeypatch.setattr("agendum.gh.auth_login", lambda target: login_calls.append(target) or True)
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir, interactive=True) is True
+    assert refresh_calls == []
+    assert login_calls == []
+
+
+def test_recover_gh_auth_refreshes_workspace_from_default_auth(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "default" / "gh"
+    status_by_dir = {
+        gh_dir: False,
+        source_dir: True,
+    }
+    refresh_calls: list[tuple[Path, Path | None]] = []
+
+    def fake_auth_status(path=None):
+        return status_by_dir.get(path, False)
+
+    def fake_refresh(target, source_dir=None):
+        refresh_calls.append((target, source_dir))
+        status_by_dir[target] = True
+
+    monkeypatch.setattr("agendum.gh.auth_status", fake_auth_status)
+    monkeypatch.setattr("agendum.gh.refresh_gh_config_dir", fake_refresh)
+    monkeypatch.setattr("agendum.gh.auth_login", lambda _target: pytest.fail("unexpected interactive login"))
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir) is True
+    assert refresh_calls == [(gh_dir, source_dir)]
+
+
+def test_recover_gh_auth_falls_back_to_interactive_login(tmp_path, monkeypatch) -> None:
+    gh_dir = tmp_path / "workspace" / "gh"
+    source_dir = tmp_path / "default" / "gh"
+    login_calls: list[Path] = []
+
+    monkeypatch.setattr("agendum.gh.auth_status", lambda path=None: False)
+    monkeypatch.setattr(
+        "agendum.gh.refresh_gh_config_dir",
+        lambda _target, source_dir=None: pytest.fail(f"unexpected refresh from {source_dir}"),
+    )
+    monkeypatch.setattr("agendum.gh.auth_login", lambda target: login_calls.append(target) or True)
+
+    assert recover_gh_auth(gh_dir, source_dir=source_dir, interactive=True) is True
+    assert login_calls == [gh_dir]
 
 
 @pytest.mark.asyncio

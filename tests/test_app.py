@@ -124,6 +124,38 @@ async def test_table_width_stays_within_viewport(tmp_db) -> None:
         await pilot.press("q")
 
 
+def test_stale_seen_delay_callback_is_ignored_after_workspace_switch(tmp_path) -> None:
+    from agendum.db import add_task, get_active_tasks, init_db, update_task
+
+    original_db = tmp_path / "original.db"
+    switched_db = tmp_path / "switched.db"
+    init_db(original_db)
+    init_db(switched_db)
+
+    original_task = add_task(original_db, title="Original", source="manual", status="active")
+    switched_task = add_task(switched_db, title="Switched", source="manual", status="active")
+    update_task(original_db, original_task, seen=0)
+    update_task(switched_db, switched_task, seen=0)
+
+    app = AgendumApp(
+        db_path=original_db,
+        config=AgendumConfig(orgs=[], sync_interval=9999, seen_delay=3),
+    )
+    app._app_focused = True
+
+    timer_callbacks: list[object] = []
+    app.set_timer = lambda delay, cb: timer_callbacks.append(cb) or SimpleNamespace(stop=lambda: None)  # type: ignore[assignment]
+
+    app.on_app_focus()
+    app._sync_context_id += 1
+    app._db_path = switched_db
+
+    timer_callbacks[0]()
+
+    assert get_active_tasks(original_db)[0]["seen"] == 0
+    assert get_active_tasks(switched_db)[0]["seen"] == 0
+
+
 # ── sleep/wake detection ─────────────────────────────────────────
 
 

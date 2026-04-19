@@ -10,6 +10,7 @@ from agendum.config import (
     namespace_runtime_paths,
     runtime_base_dir,
     runtime_paths,
+    workspace_runtime_paths,
 )
 
 
@@ -77,9 +78,20 @@ def test_namespace_runtime_paths_are_nested_under_workspaces(tmp_path: Path) -> 
     assert runtime_base_dir(paths) == tmp_path / ".agendum"
 
 
+def test_workspace_runtime_paths_with_blank_namespace_returns_base_workspace(tmp_path: Path) -> None:
+    paths = workspace_runtime_paths("", tmp_path / ".agendum")
+
+    assert paths == runtime_paths(tmp_path / ".agendum")
+
+
 def test_namespace_runtime_paths_rejects_normalized_empty_namespace(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="at least one letter or number"):
         namespace_runtime_paths("!!!", tmp_path / ".agendum")
+
+
+def test_namespace_runtime_paths_reject_owner_repo_input(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="owner name, not owner/repo"):
+        namespace_runtime_paths("owner/repo", tmp_path / ".agendum")
 
 
 def test_ensure_workspace_config_seeds_namespace_and_timing(tmp_path: Path) -> None:

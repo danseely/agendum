@@ -9,6 +9,7 @@ CONFIG_DIR = Path.home() / ".agendum"
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 DB_PATH = CONFIG_DIR / "agendum.db"
 WORKSPACES_DIRNAME = "workspaces"
+_GITHUB_OWNER_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
 
 DEFAULT_CONFIG = """\
 [github]
@@ -73,10 +74,38 @@ def runtime_base_dir(paths: RuntimePaths) -> Path:
     return workspace_root
 
 
-def namespace_runtime_paths(namespace: str, base_root: Path | None = None) -> RuntimePaths:
+def workspace_runtime_paths(
+    namespace: str | None,
+    base_root: Path | None = None,
+) -> RuntimePaths:
     base_root = base_root or CONFIG_DIR
-    namespace_dir = _namespace_directory_name(namespace)
-    return runtime_paths(base_root / WORKSPACES_DIRNAME / namespace_dir)
+    normalized = normalize_namespace(namespace)
+    if normalized is None:
+        return runtime_paths(base_root)
+    return runtime_paths(base_root / WORKSPACES_DIRNAME / _namespace_directory_name(normalized))
+
+
+def namespace_runtime_paths(namespace: str, base_root: Path | None = None) -> RuntimePaths:
+    normalized = normalize_namespace(namespace)
+    if normalized is None:
+        raise ValueError("enter at least one letter or number")
+    return workspace_runtime_paths(normalized, base_root)
+
+
+def normalize_namespace(namespace: str | None) -> str | None:
+    if namespace is None:
+        return None
+
+    normalized = namespace.strip()
+    if not normalized:
+        return None
+    if "/" in normalized:
+        raise ValueError("enter a GitHub owner name, not owner/repo")
+    if not re.search(r"[A-Za-z0-9]", normalized):
+        raise ValueError("enter at least one letter or number")
+    if "--" in normalized or not _GITHUB_OWNER_RE.fullmatch(normalized):
+        raise ValueError("enter a valid GitHub owner name")
+    return normalized
 
 
 def load_config(path: Path | None = None) -> AgendumConfig:
@@ -178,9 +207,7 @@ def _default_workspace_config(
 
 
 def _namespace_directory_name(namespace: str) -> str:
-    normalized = namespace.strip().lower()
-    normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
-    normalized = normalized.strip(".-")
-    if not normalized:
-        raise ValueError("namespace must include at least one letter or number")
-    return normalized
+    normalized = normalize_namespace(namespace)
+    if normalized is None:
+        raise ValueError("enter at least one letter or number")
+    return normalized.lower()

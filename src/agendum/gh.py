@@ -222,6 +222,24 @@ async def get_gh_username() -> str:
     return result.strip()
 
 
+def auth_status(gh_config_dir: Path | None = None) -> bool:
+    """Return whether gh has a valid authenticated session for a config dir."""
+    env = os.environ.copy()
+    if gh_config_dir is not None:
+        env["GH_CONFIG_DIR"] = str(gh_config_dir)
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
+
+
 def auth_login(gh_config_dir: Path) -> bool:
     """Run an interactive gh auth login with an isolated config directory."""
     gh_config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -263,6 +281,43 @@ def seed_gh_config_dir(gh_config_dir: Path, source_dir: Path | None = None) -> N
             continue
         shutil.copy2(source_path, target_path)
         os.chmod(target_path, 0o600)
+
+
+def refresh_gh_config_dir(gh_config_dir: Path, source_dir: Path | None = None) -> None:
+    """Refresh workspace-local gh auth/config from another gh config directory."""
+    gh_config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    source_dir = source_dir or default_gh_config_dir()
+    if source_dir == gh_config_dir:
+        return
+
+    for filename in _GH_CONFIG_FILES:
+        source_path = source_dir / filename
+        if not source_path.exists():
+            continue
+        target_path = gh_config_dir / filename
+        shutil.copy2(source_path, target_path)
+        os.chmod(target_path, 0o600)
+
+
+def recover_gh_auth(
+    gh_config_dir: Path,
+    *,
+    source_dir: Path | None = None,
+    interactive: bool = False,
+) -> bool:
+    """Recover workspace-local gh auth from local state, default auth, or login."""
+    if auth_status(gh_config_dir):
+        return True
+
+    source_dir = source_dir or default_gh_config_dir()
+    if source_dir != gh_config_dir and auth_status(source_dir):
+        refresh_gh_config_dir(gh_config_dir, source_dir)
+        if auth_status(gh_config_dir):
+            return True
+
+    if not interactive:
+        return False
+    return auth_login(gh_config_dir)
 
 
 def get_gh_config_dir() -> Path | None:

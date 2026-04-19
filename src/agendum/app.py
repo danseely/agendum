@@ -28,7 +28,7 @@ from agendum.config import (
     RuntimePaths,
     default_runtime_paths,
     ensure_workspace_config,
-    namespace_runtime_paths,
+    workspace_runtime_paths,
     runtime_base_dir,
     runtime_paths,
 )
@@ -176,6 +176,7 @@ class AgendumApp(App):
         self._sync_timer: Timer | None = None
         self._spinner_timer: Timer | None = None
         self._status_timer: Timer | None = None
+        self._seen_timer: Timer | None = None
         self._sync_context_id = 0
 
     @property
@@ -188,6 +189,8 @@ class AgendumApp(App):
 
     @property
     def current_namespace(self) -> str | None:
+        if self._runtime.workspace_root == self._workspace_base_dir:
+            return None
         if self._config and self._config.orgs:
             return self._config.orgs[0]
         return None
@@ -471,10 +474,13 @@ class AgendumApp(App):
         """Show the command input for namespace switching."""
         self._show_input(
             mode="namespace",
-            placeholder="GitHub namespace to switch into…",
+            placeholder="GitHub namespace (blank for base workspace)…",
             value=self.current_namespace or "",
         )
-        self.notify("Type a GitHub namespace, then Enter to re-auth", timeout=3)
+        self.notify(
+            "Enter a GitHub namespace, or submit blank for the base workspace",
+            timeout=3,
+        )
 
     def action_cancel_input(self) -> None:
         """Hide the create-input and return focus to the table."""
@@ -537,43 +543,49 @@ class AgendumApp(App):
     # ── task creation via input ──────────────────────────────────────
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        mode = self._input_mode
         value = event.value.strip()
-        if not value:
+        if mode != "namespace" and not value:
             self.action_cancel_input()
             return
-        mode = self._input_mode
         self.action_cancel_input()
         if mode == "namespace":
-            self._switch_namespace(value)
+            self._switch_namespace(value or None)
             return
 
         add_task(self._db_path, title=value, source="manual", status="active")
         self.refresh_table()
 
-    def _switch_namespace(self, namespace: str) -> None:
+    def _switch_namespace(self, namespace: str | None) -> None:
         try:
-            target_runtime = namespace_runtime_paths(namespace, self._workspace_base_dir)
-        except ValueError:
+            target_runtime = workspace_runtime_paths(namespace, self._workspace_base_dir)
+        except ValueError as exc:
             self.notify(
-                "Invalid namespace: enter at least one letter or number.",
+                f"Invalid namespace: {str(exc).rstrip('.')}.",
                 severity="error",
                 timeout=5,
             )
             return
-        with self.suspend():
-            authenticated = auth_login(target_runtime.gh_config_dir)
-        if not authenticated:
-            self._sync_error = "gh auth login failed"
-            self._update_status_bar()
+
+        if target_runtime == self._runtime:
             return
+
+        target_namespace = namespace or None
+        if target_runtime.workspace_root != self._workspace_base_dir:
+            with self.suspend():
+                authenticated = auth_login(target_runtime.gh_config_dir)
+            if not authenticated:
+                self._sync_error = "gh auth login failed"
+                self._update_status_bar()
+                return
 
         config = ensure_workspace_config(
             target_runtime,
-            namespace=namespace,
+            namespace=target_namespace,
             seed=self._config,
         )
         self._apply_runtime(target_runtime, config)
-        self.notify(f"Switched to {namespace}", timeout=3)
+        self.notify(f"Switched to {target_namespace or 'base workspace'}", timeout=3)
 
     def _apply_runtime(self, runtime: RuntimePaths, config: AgendumConfig) -> None:
         self._runtime = runtime
@@ -582,6 +594,7 @@ class AgendumApp(App):
         self._config = config
         init_db(self._db_path)
         self._sync_context_id += 1
+        self._cancel_seen_timer()
         self._last_sync = None
         self._sync_error = None
         self._sync_in_progress = False
@@ -749,11 +762,32 @@ class AgendumApp(App):
 
     def on_app_focus(self) -> None:
         self._app_focused = True
-        if self._config:
-            self.set_timer(self._config.seen_delay, self._mark_seen)
+        self._schedule_mark_seen()
 
     def on_app_blur(self) -> None:
         self._app_focused = False
+        self._cancel_seen_timer()
+
+    def _schedule_mark_seen(self) -> None:
+        self._cancel_seen_timer()
+        if self._config is None:
+            return
+
+        sync_context_id = self._sync_context_id
+        db_path = self._db_path
+
+        def mark_seen_for_context() -> None:
+            if sync_context_id == self._sync_context_id:
+                self._seen_timer = None
+            self._mark_seen(db_path, sync_context_id)
+
+        self._seen_timer = self.set_timer(self._config.seen_delay, mark_seen_for_context)
+
+    def _cancel_seen_timer(self) -> None:
+        if self._seen_timer is None:
+            return
+        self._seen_timer.stop()
+        self._seen_timer = None
 
     def _disable_focus_reporting(self) -> None:
         try:
@@ -763,9 +797,10 @@ class AgendumApp(App):
             pass
 
     def on_unmount(self) -> None:
+        self._cancel_seen_timer()
         self._disable_focus_reporting()
 
-    def _mark_seen(self) -> None:
-        if self._app_focused:
-            mark_all_seen(self._db_path)
+    def _mark_seen(self, db_path: Path, sync_context_id: int) -> None:
+        if self._app_focused and sync_context_id == self._sync_context_id:
+            mark_all_seen(db_path)
             self.refresh_table()
