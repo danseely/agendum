@@ -82,7 +82,7 @@ uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 This repo uses Conventional Commits and SemVer. PR titles should also follow Conventional Commits so squash merges remain release-friendly. Keep PR titles as plain Conventional Commit subjects without extra prefixes.
 
 Merging a non-release PR into `main` creates or updates a rolling `release/next` PR with the version and changelog changes. If more PRs merge into `main` before release, that same release PR is updated in place and its target version is recalculated as needed. Merging the release PR publishes the GitHub tag and release.
-Publishing the GitHub release also dispatches `repository_dispatch` to `danseely/homebrew-tap` so the Homebrew tap can update from the release payload.
+That same `Release` workflow also dispatches `repository_dispatch` to `danseely/homebrew-tap` so the Homebrew tap can update from the release payload, rather than relying on a follow-on `release` event.
 
 The first release still needs a one-time bootstrap tag if `main` does not yet contain a reachable release tag.
 
@@ -98,11 +98,11 @@ From a maintainer point of view, the normal release flow is:
 3. Review the `release/next` PR and wait for its validation check to pass.
 4. Merge `release/next` when you want to ship.
 5. Wait for the `Release` workflow to publish the GitHub tag and release.
-6. Wait for the `Dispatch Homebrew Tap` workflow to notify `danseely/homebrew-tap`.
+6. Wait for the `Release` workflow to dispatch the release payload to `danseely/homebrew-tap`.
 7. Review and merge the Homebrew tap release PR after its CI passes.
 8. If you want the separate Homebrew `pr-pull` publish path, trigger that in the tap after the release PR merge.
 
-You should not normally need to run the tap workflow by hand. Manual replay is only for missed dispatches, failed automation, or debugging.
+You should not normally need to run the replay workflow by hand. `Dispatch Homebrew Tap` exists as a manual replay path for missed dispatches, failed automation, or debugging.
 
 ## Usage
 

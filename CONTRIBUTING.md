@@ -65,6 +65,7 @@ The publish workflow:
 - creates an annotated git tag
 - builds `sdist` and wheel artifacts with `uv build`
 - publishes a GitHub release
+- dispatches the release payload to `danseely/homebrew-tap`
 
 For the first release, bootstrap one reachable release tag if none exists yet, then the rolling release PR automation takes over.
 

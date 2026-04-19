@@ -1,38 +1,45 @@
 name: Dispatch Homebrew Tap
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to replay to the Homebrew tap, for example v0.3.0
+        required: true
+        type: string
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   dispatch:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
       TARGET_REPO: danseely/homebrew-tap
       DISPATCH_EVENT_TYPE: agendum_release_published
       SOURCE_REPO: ${{ github.repository }}
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
-      RELEASE_URL: ${{ github.event.release.html_url }}
-      TARBALL_URL: ${{ github.event.release.tarball_url }}
-      PUBLISHED_AT: ${{ github.event.release.published_at }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      HOMEBREW_TAP_DISPATCH_TOKEN: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
     steps:
       - name: Dispatch release metadata to Homebrew tap
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -z "${GH_TOKEN:-}" ]]; then
+          if [[ -z "${HOMEBREW_TAP_DISPATCH_TOKEN:-}" ]]; then
             echo "HOMEBREW_TAP_DISPATCH_TOKEN is required to dispatch to ${TARGET_REPO}." >&2
             exit 1
           fi
 
+          RELEASE_JSON=$(GH_TOKEN="${GITHUB_TOKEN}" gh api "/repos/${SOURCE_REPO}/releases/tags/${RELEASE_TAG}")
+          RELEASE_URL=$(jq -r '.html_url' <<<"${RELEASE_JSON}")
+          TARBALL_URL=$(jq -r '.tarball_url' <<<"${RELEASE_JSON}")
+          PUBLISHED_AT=$(jq -r '.published_at' <<<"${RELEASE_JSON}")
           VERSION="${RELEASE_TAG#v}"
 
           echo "Dispatching ${DISPATCH_EVENT_TYPE} to ${TARGET_REPO}."
-          if ! dispatch_output=$(gh api \
+          if ! dispatch_output=$(GH_TOKEN="${HOMEBREW_TAP_DISPATCH_TOKEN}" gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
             "/repos/${TARGET_REPO}/dispatches" \
