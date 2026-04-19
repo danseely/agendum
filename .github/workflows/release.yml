@@ -62,3 +62,43 @@ jobs:
           gh release create "${RELEASE_TAG}" dist/* \
             --title "${RELEASE_TAG}" \
             --generate-notes
+
+      - name: Dispatch Homebrew tap
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_DISPATCH_TOKEN: ${{ secrets.HOMEBREW_TAP_DISPATCH_TOKEN }}
+          TARGET_REPO: danseely/homebrew-tap
+          DISPATCH_EVENT_TYPE: agendum_release_published
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${HOMEBREW_TAP_DISPATCH_TOKEN:-}" ]]; then
+            echo "HOMEBREW_TAP_DISPATCH_TOKEN is required to dispatch to ${TARGET_REPO}." >&2
+            exit 1
+          fi
+
+          RELEASE_JSON=$(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")
+          RELEASE_URL=$(jq -r '.html_url' <<<"${RELEASE_JSON}")
+          TARBALL_URL=$(jq -r '.tarball_url' <<<"${RELEASE_JSON}")
+          PUBLISHED_AT=$(jq -r '.published_at' <<<"${RELEASE_JSON}")
+          VERSION="${RELEASE_TAG#v}"
+
+          echo "Dispatching ${DISPATCH_EVENT_TYPE} for ${RELEASE_TAG} to ${TARGET_REPO}."
+          if ! dispatch_output=$(GH_TOKEN="${HOMEBREW_TAP_DISPATCH_TOKEN}" gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${TARGET_REPO}/dispatches" \
+            -f event_type="${DISPATCH_EVENT_TYPE}" \
+            -F client_payload[source_repo]="${GITHUB_REPOSITORY}" \
+            -F client_payload[tag]="${RELEASE_TAG}" \
+            -F client_payload[version]="${VERSION}" \
+            -F client_payload[release_url]="${RELEASE_URL}" \
+            -F client_payload[tarball_url]="${TARBALL_URL}" \
+            -F client_payload[published_at]="${PUBLISHED_AT}" 2>&1); then
+            echo "Dispatch to ${TARGET_REPO} with event ${DISPATCH_EVENT_TYPE} failed." >&2
+            echo "${dispatch_output}" >&2
+            exit 1
+          fi
+
+          echo "Dispatch to ${TARGET_REPO} with event ${DISPATCH_EVENT_TYPE} succeeded."

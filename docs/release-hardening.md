@@ -14,7 +14,7 @@ The normal operator flow is:
 2. Review the rolling `release/next` PR created or updated by automation.
 3. Merge `release/next` when ready to ship.
 4. Confirm that `release.yml` publishes the GitHub tag and release.
-5. Confirm that `dispatch-homebrew-tap.yml` dispatches the release payload to `danseely/homebrew-tap`.
+5. Confirm that `release.yml` dispatches the release payload to `danseely/homebrew-tap`.
 6. Review and merge the resulting tap PR after Homebrew CI passes.
 7. Trigger the tap's separate `pr-pull` publish path if you want bottles/publish handled through the standard Homebrew flow.
 
@@ -39,6 +39,8 @@ The release workflow assumes `GITHUB_TOKEN` has:
 
 - `contents: write` to create the annotated tag and publish the GitHub release
 
+The release workflow also assumes a repository secret named `HOMEBREW_TAP_DISPATCH_TOKEN` exists so it can notify `danseely/homebrew-tap` after the release is published.
+
 The rolling release PR workflow also needs repository write permissions for:
 
 - `contents: write`
@@ -47,7 +49,9 @@ The rolling release PR workflow also needs repository write permissions for:
 
 ## Homebrew tap dispatch
 
-After `release.yml` publishes a GitHub release, `.github/workflows/dispatch-homebrew-tap.yml` runs on the `release.published` event and sends a `repository_dispatch` to `danseely/homebrew-tap`.
+After `release.yml` publishes a GitHub release, that same workflow fetches the release metadata and sends a `repository_dispatch` to `danseely/homebrew-tap`.
+
+`.github/workflows/dispatch-homebrew-tap.yml` is the manual replay path. It accepts a release tag input and replays the same dispatch payload for an existing GitHub release.
 
 Use a dedicated repo secret named `HOMEBREW_TAP_DISPATCH_TOKEN` for the dispatch call. Keep that token scoped only to the tap repo and the `repository_dispatch` API path it needs; do not reuse `GITHUB_TOKEN` for cross-repo automation.
 
@@ -63,7 +67,7 @@ The dispatch contract is:
 
 Sequencing matters: the tap should treat `repository_dispatch` as the signal that the GitHub release already exists and can be consumed from the release URLs above. The tap should not assume source artifacts are available before the dispatch arrives.
 
-Operational fallback: if dispatch fails, rerun the `Dispatch Homebrew Tap` workflow from the Actions UI. If the workflow is unavailable, trigger the tap manually with the same `repository_dispatch` payload using `gh api` and the same token.
+Operational fallback: if dispatch fails, rerun `release.yml` if you want to replay the full publish handoff for that merge, or run `Dispatch Homebrew Tap` with the desired tag if you only want to replay the tap notification. If the workflow is unavailable, trigger the tap manually with the same `repository_dispatch` payload using `gh api` and the same token.
 
 ## Bootstrap flow
 
