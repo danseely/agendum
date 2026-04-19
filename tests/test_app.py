@@ -8,7 +8,7 @@ from textual.worker import Worker, WorkerState
 from textual.widgets import DataTable
 
 from agendum.app import AgendumApp
-from agendum.config import AgendumConfig
+from agendum.config import AgendumConfig, namespace_runtime_paths, runtime_paths
 
 
 def _capture_worker_call(calls: list):
@@ -154,6 +154,40 @@ def test_stale_seen_delay_callback_is_ignored_after_workspace_switch(tmp_path) -
 
     assert get_active_tasks(original_db)[0]["seen"] == 0
     assert get_active_tasks(switched_db)[0]["seen"] == 0
+
+
+def test_apply_runtime_rearms_seen_delay_when_app_is_focused(tmp_path) -> None:
+    base_root = tmp_path / ".agendum"
+    current_runtime = runtime_paths(base_root)
+    target_runtime = namespace_runtime_paths("example-org", base_root)
+
+    from agendum.db import init_db
+
+    init_db(current_runtime.db_path)
+    init_db(target_runtime.db_path)
+
+    app = AgendumApp(
+        runtime=current_runtime,
+        workspace_base_dir=base_root,
+        config=AgendumConfig(orgs=["base"], sync_interval=9999, seen_delay=3),
+    )
+    app._app_focused = True
+
+    stopped: list[bool] = []
+    schedule_calls: list[bool] = []
+    app._seen_timer = SimpleNamespace(stop=lambda: stopped.append(True))
+    app._schedule_mark_seen = lambda: schedule_calls.append(True)  # type: ignore[assignment]
+    app.refresh_table = lambda: None  # type: ignore[assignment]
+    app._update_status_bar = lambda: None  # type: ignore[assignment]
+    app._start_sync = lambda: None  # type: ignore[assignment]
+
+    app._apply_runtime(
+        target_runtime,
+        AgendumConfig(orgs=["example-org"], sync_interval=9999, seen_delay=3),
+    )
+
+    assert stopped == [True]
+    assert schedule_calls == [True]
 
 
 # ── sleep/wake detection ─────────────────────────────────────────

@@ -40,7 +40,7 @@ from agendum.db import (
     remove_task,
     update_task,
 )
-from agendum.gh import auth_login, set_gh_config_dir
+from agendum.gh import auth_login, recover_gh_auth, set_gh_config_dir
 from agendum.syncer import run_sync
 from agendum.widgets import (
     ActionModal,
@@ -191,6 +191,8 @@ class AgendumApp(App):
     def current_namespace(self) -> str | None:
         if self._runtime.workspace_root == self._workspace_base_dir:
             return None
+        if self._runtime.workspace_root.parent.name == "workspaces":
+            return self._runtime.workspace_root.name
         if self._config and self._config.orgs:
             return self._config.orgs[0]
         return None
@@ -572,12 +574,13 @@ class AgendumApp(App):
 
         target_namespace = namespace or None
         if target_runtime.workspace_root != self._workspace_base_dir:
-            with self.suspend():
-                authenticated = auth_login(target_runtime.gh_config_dir)
-            if not authenticated:
-                self._sync_error = "gh auth login failed"
-                self._update_status_bar()
-                return
+            if not recover_gh_auth(target_runtime.gh_config_dir):
+                with self.suspend():
+                    authenticated = auth_login(target_runtime.gh_config_dir)
+                if not authenticated:
+                    self._sync_error = "gh auth login failed"
+                    self._update_status_bar()
+                    return
 
         config = ensure_workspace_config(
             target_runtime,
@@ -606,6 +609,8 @@ class AgendumApp(App):
         if self._sync_timer is not None:
             self._sync_timer.stop()
             self._sync_timer = self.set_interval(self._config.sync_interval, self._start_sync)
+        if self._app_focused:
+            self._schedule_mark_seen()
         self.refresh_table()
         self._update_status_bar()
         self._start_sync()
