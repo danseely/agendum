@@ -1,3 +1,13 @@
+## v0.5.0 (2026-04-20)
+
+### Feat
+
+- **status**: introduce backlog + in-progress lifecycle for manual tasks (#42)
+
+### Fix
+
+- **syncer**: close orphaned review tasks when repo drops from fetched_repos (#40)
+
 ## v0.4.0 (2026-04-20)
 
 ### Feat
