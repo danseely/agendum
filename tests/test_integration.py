@@ -16,7 +16,7 @@ async def test_table_displays_grouped_tasks(tmp_db: Path) -> None:
              gh_author="reviewer", gh_author_name="Reviewer")
     add_task(tmp_db, title="add missing type exports", source="issue", status="open",
              project="example-repo", gh_number=98, gh_url="https://github.com/example-org/example-repo/issues/98")
-    add_task(tmp_db, title="update docs", source="manual", status="active")
+    add_task(tmp_db, title="update docs", source="manual", status="backlog")
 
     config = AgendumConfig(orgs=[], sync_interval=9999)
     app = AgendumApp(db_path=tmp_db, config=config)

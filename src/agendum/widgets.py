@@ -22,9 +22,9 @@ STATUS_STYLES: dict[str, str] = {
     "review requested": "#a78bfa",
     "reviewed": "#7c6aad",
     "re-review requested": "#e879f9",
+    "backlog": "#c7a17a",
     "in progress": "#2dd4bf",
     "closed": "#888888",
-    "active": "#a3e635",
     "done": "#888888",
 }
 
@@ -92,6 +92,8 @@ _ACTION_LABELS: dict[str, str] = {
     "open_browser": "Open in browser",
     "remove": "Remove from board",
     "mark_reviewed": "Mark as reviewed",
+    "mark_in_progress": "Mark in progress",
+    "mark_backlog": "Move to backlog",
     "mark_done": "Mark done",
 }
 
@@ -150,12 +152,17 @@ class ActionModal(ModalScreen[str | None]):
 
     def _build_actions(self) -> list[tuple[str, str]]:
         source = self._task.get("source", "")
+        status = self._task.get("status", "")
         actions: list[tuple[str, str]] = []
         if self._task.get("gh_url"):
             actions.append(("open_browser", _ACTION_LABELS["open_browser"]))
         if source == "pr_review":
             actions.append(("mark_reviewed", _ACTION_LABELS["mark_reviewed"]))
         if source == "manual":
+            if status == "in progress":
+                actions.append(("mark_backlog", _ACTION_LABELS["mark_backlog"]))
+            else:
+                actions.append(("mark_in_progress", _ACTION_LABELS["mark_in_progress"]))
             actions.append(("mark_done", _ACTION_LABELS["mark_done"]))
         actions.append(("remove", _ACTION_LABELS["remove"]))
         return actions

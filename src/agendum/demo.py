@@ -249,7 +249,7 @@ def seed_demo_data(db_path: Path) -> None:
         {
             "title": "hero shot",
             "source": "manual",
-            "status": "active",
+            "status": "in progress",
             "project": "screenshot-run",
             "tags": json.dumps(["manual", "screenshots"]),
             "seen": False,
@@ -257,7 +257,7 @@ def seed_demo_data(db_path: Path) -> None:
         {
             "title": "trim rows",
             "source": "manual",
-            "status": "active",
+            "status": "backlog",
             "project": "shot",
             "tags": json.dumps(["manual", "tuning"]),
             "seen": True,
@@ -265,7 +265,7 @@ def seed_demo_data(db_path: Path) -> None:
         {
             "title": "capture a second crop with the review section centered and enough extra rows visible to show how titles wrap once the table gets visually busy",
             "source": "manual",
-            "status": "active",
+            "status": "in progress",
             "project": "screenshot-run-wide",
             "tags": json.dumps(["manual", "framing"]),
             "seen": False,
@@ -273,7 +273,7 @@ def seed_demo_data(db_path: Path) -> None:
         {
             "title": "cleanup",
             "source": "manual",
-            "status": "active",
+            "status": "backlog",
             "project": "cleanup",
             "tags": json.dumps(["manual", "cleanup"]),
             "seen": True,

@@ -69,7 +69,7 @@ def test_search_tasks_matches_across_fields(tmp_db: Path, query: str, title: str
         tmp_db,
         title="Heartbeat Title Match",
         source="manual",
-        status="active",
+        status="backlog",
     )
     add_task(
         tmp_db,
@@ -113,7 +113,7 @@ def test_search_tasks_matches_across_fields(tmp_db: Path, query: str, title: str
         tmp_db,
         title="Tags Match",
         source="manual",
-        status="active",
+        status="backlog",
         tags='["urgent", "review"]',
     )
     add_task(
@@ -139,7 +139,7 @@ def test_get_task_returns_present_and_missing(tmp_db: Path) -> None:
         tmp_db,
         title="Lookup me",
         source="manual",
-        status="active",
+        status="backlog",
         tags='["one"]',
     )
 
@@ -157,7 +157,7 @@ def test_create_manual_task_sets_defaults_and_tags(tmp_db: Path) -> None:
 
     assert task["title"] == "Write docs"
     assert task["source"] == "manual"
-    assert task["status"] == "active"
+    assert task["status"] == "backlog"
     assert task["project"] == "docs"
     assert task["tags"] == ["alpha", "beta"]
 

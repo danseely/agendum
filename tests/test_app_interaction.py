@@ -32,7 +32,7 @@ def _seed_tasks(tmp_db: Path) -> None:
              gh_author="author", gh_author_name="Author")
     add_task(tmp_db, title="An issue", source="issue", status="open",
              project="repo", gh_number=3, gh_url="https://github.com/org/repo/issues/3")
-    add_task(tmp_db, title="Manual task", source="manual", status="active")
+    add_task(tmp_db, title="Manual task", source="manual", status="backlog")
 
 
 # ── navigation ───────────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ async def test_empty_input_cancelled(tmp_db: Path) -> None:
 
 async def test_mark_done_updates_status(tmp_db: Path) -> None:
     init_db(tmp_db)
-    task_id = add_task(tmp_db, title="Finish me", source="manual", status="active")
+    task_id = add_task(tmp_db, title="Finish me", source="manual", status="backlog")
     app = _app(tmp_db)
     # Directly invoke the handler to test the logic without modal interaction
     app._modal_task = {"id": task_id, "source": "manual", "gh_url": None}
@@ -142,9 +142,53 @@ async def test_mark_reviewed_updates_status(tmp_db: Path) -> None:
         assert task["status"] == "reviewed"
 
 
+async def test_mark_in_progress_updates_status(tmp_db: Path) -> None:
+    init_db(tmp_db)
+    task_id = add_task(tmp_db, title="Start this", source="manual", status="backlog")
+    app = _app(tmp_db)
+    app._modal_task = {"id": task_id, "source": "manual", "gh_url": None,
+                       "status": "backlog"}
+    app._db_path = tmp_db
+    async with app.run_test() as pilot:
+        app._handle_action("mark_in_progress")
+        await pilot.pause()
+        tasks = get_active_tasks(tmp_db)
+        assert tasks[0]["status"] == "in progress"
+
+
+async def test_mark_backlog_updates_status(tmp_db: Path) -> None:
+    init_db(tmp_db)
+    task_id = add_task(tmp_db, title="Pause this", source="manual", status="in progress")
+    app = _app(tmp_db)
+    app._modal_task = {"id": task_id, "source": "manual", "gh_url": None,
+                       "status": "in progress"}
+    app._db_path = tmp_db
+    async with app.run_test() as pilot:
+        app._handle_action("mark_backlog")
+        await pilot.pause()
+        tasks = get_active_tasks(tmp_db)
+        assert tasks[0]["status"] == "backlog"
+
+
+async def test_create_task_defaults_to_backlog(tmp_db: Path) -> None:
+    init_db(tmp_db)
+    app = _app(tmp_db)
+    async with app.run_test() as pilot:
+        inp = app.query_one("#create-input")
+        inp.focus()
+        await pilot.pause()
+        inp.value = "Write the post"
+        await pilot.press("enter")
+        await pilot.pause()
+        tasks = get_active_tasks(tmp_db)
+        assert len(tasks) == 1
+        assert tasks[0]["title"] == "Write the post"
+        assert tasks[0]["status"] == "backlog"
+
+
 async def test_remove_deletes_task(tmp_db: Path) -> None:
     init_db(tmp_db)
-    task_id = add_task(tmp_db, title="Remove me", source="manual", status="active")
+    task_id = add_task(tmp_db, title="Remove me", source="manual", status="backlog")
     app = _app(tmp_db)
     app._modal_task = {"id": task_id, "source": "manual", "gh_url": None}
     async with app.run_test() as pilot:

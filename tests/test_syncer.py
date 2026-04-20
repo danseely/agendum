@@ -123,7 +123,7 @@ def test_diff_detects_closed_task() -> None:
 
 def test_diff_ignores_manual_tasks() -> None:
     existing = [
-        {"id": 1, "gh_url": None, "status": "active", "title": "Manual", "source": "manual"},
+        {"id": 1, "gh_url": None, "status": "backlog", "title": "Manual", "source": "manual"},
     ]
     incoming: list[dict] = []
     result = diff_tasks(existing, incoming)

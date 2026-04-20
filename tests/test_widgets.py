@@ -38,7 +38,7 @@ class TestStyledStatus:
             ("re-review requested", "#e879f9"),
             ("reviewed", "#7c6aad"),
             ("in progress", "#2dd4bf"),
-            ("active", "#a3e635"),
+            ("backlog", "#c7a17a"),
             ("done", "#888888"),
         ],
     )
@@ -150,6 +150,22 @@ class TestActionModal:
         action_ids = [a[0] for a in actions]
         assert "mark_done" in action_ids
         assert "mark_reviewed" not in action_ids
+
+    def test_manual_backlog_has_mark_in_progress(self) -> None:
+        task = {"source": "manual", "status": "backlog", "title": "Task"}
+        modal = ActionModal(task)
+        action_ids = [a[0] for a in modal._build_actions()]
+        assert "mark_in_progress" in action_ids
+        assert "mark_backlog" not in action_ids
+        assert "mark_done" in action_ids
+
+    def test_manual_in_progress_has_mark_backlog(self) -> None:
+        task = {"source": "manual", "status": "in progress", "title": "Task"}
+        modal = ActionModal(task)
+        action_ids = [a[0] for a in modal._build_actions()]
+        assert "mark_backlog" in action_ids
+        assert "mark_in_progress" not in action_ids
+        assert "mark_done" in action_ids
 
     def test_no_gh_url_omits_open_browser(self) -> None:
         task = {"source": "manual", "title": "No URL"}

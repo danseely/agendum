@@ -538,6 +538,12 @@ class AgendumApp(App):
         elif action == "mark_reviewed":
             update_task(self._db_path, task_id, status="reviewed")
             self.refresh_table()
+        elif action == "mark_in_progress":
+            update_task(self._db_path, task_id, status="in progress")
+            self.refresh_table()
+        elif action == "mark_backlog":
+            update_task(self._db_path, task_id, status="backlog")
+            self.refresh_table()
         elif action == "remove":
             remove_task(self._db_path, task_id)
             self.refresh_table()
@@ -555,7 +561,7 @@ class AgendumApp(App):
             self._switch_namespace(value or None)
             return
 
-        add_task(self._db_path, title=value, source="manual", status="active")
+        add_task(self._db_path, title=value, source="manual", status="backlog")
         self.refresh_table()
 
     def _switch_namespace(self, namespace: str | None) -> None:
