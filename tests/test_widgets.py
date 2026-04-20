@@ -35,9 +35,10 @@ class TestStyledStatus:
             ("changes requested", "#f87171"),
             ("merged", "#888888"),
             ("review requested", "#a78bfa"),
-            ("re-review requested", "#a78bfa"),
-            ("in progress", "#60a5fa"),
-            ("active", "#60a5fa"),
+            ("re-review requested", "#e879f9"),
+            ("reviewed", "#7c6aad"),
+            ("in progress", "#2dd4bf"),
+            ("active", "#a3e635"),
             ("done", "#888888"),
         ],
     )

@@ -20,11 +20,11 @@ STATUS_STYLES: dict[str, str] = {
     "approved": "#4ade80",
     "merged": "#888888",
     "review requested": "#a78bfa",
-    "reviewed": "#a78bfa",
-    "re-review requested": "#a78bfa",
-    "in progress": "#60a5fa",
+    "reviewed": "#7c6aad",
+    "re-review requested": "#e879f9",
+    "in progress": "#2dd4bf",
     "closed": "#888888",
-    "active": "#60a5fa",
+    "active": "#a3e635",
     "done": "#888888",
 }
 
