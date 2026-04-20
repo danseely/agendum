@@ -165,7 +165,7 @@ def create_manual_task(
         db_path,
         title=title,
         source="manual",
-        status="active",
+        status="backlog",
         project=project,
         tags=tags_json,
     )

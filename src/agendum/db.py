@@ -44,6 +44,9 @@ def init_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     conn = _connect(db_path)
     conn.executescript(SCHEMA)
+    # Migrate legacy manual-task status "active" → "backlog".
+    conn.execute("UPDATE tasks SET status='backlog' WHERE status='active'")
+    conn.commit()
     conn.close()
     os.chmod(db_path, 0o600)
 

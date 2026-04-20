@@ -9,8 +9,8 @@ from agendum.db import add_task, get_active_tasks, init_db, mark_all_seen, updat
 
 def test_mark_all_seen(tmp_db: Path) -> None:
     init_db(tmp_db)
-    id1 = add_task(tmp_db, title="Unseen 1", source="manual", status="active")
-    id2 = add_task(tmp_db, title="Unseen 2", source="manual", status="active")
+    id1 = add_task(tmp_db, title="Unseen 1", source="manual", status="backlog")
+    id2 = add_task(tmp_db, title="Unseen 2", source="manual", status="backlog")
     update_task(tmp_db, id1, seen=0)
     update_task(tmp_db, id2, seen=0)
 
@@ -22,7 +22,7 @@ def test_mark_all_seen(tmp_db: Path) -> None:
 
 def test_mark_all_seen_sets_last_seen_at(tmp_db: Path) -> None:
     init_db(tmp_db)
-    task_id = add_task(tmp_db, title="Check timestamp", source="manual", status="active")
+    task_id = add_task(tmp_db, title="Check timestamp", source="manual", status="backlog")
     update_task(tmp_db, task_id, seen=0)
 
     mark_all_seen(tmp_db)
@@ -33,7 +33,7 @@ def test_mark_all_seen_sets_last_seen_at(tmp_db: Path) -> None:
 
 def test_mark_all_seen_noop_when_all_seen(tmp_db: Path) -> None:
     init_db(tmp_db)
-    add_task(tmp_db, title="Already seen", source="manual", status="active")
+    add_task(tmp_db, title="Already seen", source="manual", status="backlog")
     # Should not raise
     mark_all_seen(tmp_db)
     tasks = get_active_tasks(tmp_db)
@@ -42,14 +42,14 @@ def test_mark_all_seen_noop_when_all_seen(tmp_db: Path) -> None:
 
 def test_update_task_rejects_invalid_columns(tmp_db: Path) -> None:
     init_db(tmp_db)
-    task_id = add_task(tmp_db, title="Bad update", source="manual", status="active")
+    task_id = add_task(tmp_db, title="Bad update", source="manual", status="backlog")
     with pytest.raises(ValueError, match="Invalid column names"):
         update_task(tmp_db, task_id, evil_column="drop table")
 
 
 def test_update_task_noop_with_no_fields(tmp_db: Path) -> None:
     init_db(tmp_db)
-    task_id = add_task(tmp_db, title="Noop", source="manual", status="active")
+    task_id = add_task(tmp_db, title="Noop", source="manual", status="backlog")
     # Should not raise or execute SQL
     update_task(tmp_db, task_id)
     tasks = get_active_tasks(tmp_db)

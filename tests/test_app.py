@@ -108,7 +108,7 @@ async def test_table_width_stays_within_viewport(tmp_db) -> None:
         tmp_db,
         title="Fix the DataTable width-budget regression",
         source="manual",
-        status="active",
+        status="backlog",
         gh_author_name="Alexandria Stone",
         project="agendum",
     )
@@ -132,8 +132,8 @@ def test_stale_seen_delay_callback_is_ignored_after_workspace_switch(tmp_path) -
     init_db(original_db)
     init_db(switched_db)
 
-    original_task = add_task(original_db, title="Original", source="manual", status="active")
-    switched_task = add_task(switched_db, title="Switched", source="manual", status="active")
+    original_task = add_task(original_db, title="Original", source="manual", status="backlog")
+    switched_task = add_task(switched_db, title="Switched", source="manual", status="backlog")
     update_task(original_db, original_task, seen=0)
     update_task(switched_db, switched_task, seen=0)
 
