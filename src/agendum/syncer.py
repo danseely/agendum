@@ -41,6 +41,9 @@ def diff_tasks(
     If *fetched_repos* is provided, only close tasks whose repo was
     actually fetched.  This prevents a partial API failure from
     wiping out items belonging to repos that simply weren't reached.
+    ``pr_review`` tasks are exempt from this guard — their completeness
+    is governed by *review_fetch_ok*, and their repo may no longer appear
+    in *fetched_repos* once GitHub drops the user from ``--review-requested``.
 
     If *review_fetch_ok* is False, review tasks are never closed
     (the review discovery may have returned incomplete results).
@@ -84,7 +87,10 @@ def diff_tasks(
             if not review_fetch_ok and task.get("source") == "pr_review":
                 continue
             # Only close items from repos we actually fetched data for.
-            if fetched_repos is not None:
+            # pr_review tasks are gated by review_fetch_ok instead — their
+            # repo may drop out of fetched_repos once GitHub removes the
+            # user from --review-requested.
+            if fetched_repos is not None and task.get("source") != "pr_review":
                 task_repo = task.get("gh_repo", "")
                 if task_repo not in fetched_repos:
                     continue

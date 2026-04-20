@@ -43,6 +43,29 @@ def test_diff_detects_tag_change() -> None:
     assert result.to_update[0]["tags"] == '["new"]'
 
 
+def test_diff_closes_review_task_when_repo_not_in_fetched_repos() -> None:
+    """Review tasks must close via review_fetch_ok, regardless of fetched_repos.
+
+    Once GitHub drops the user from --review-requested, the repo may no
+    longer be in fetched_repos — but the review task must still close.
+    Authored/issue tasks keep the fetched_repos guard.
+    """
+    existing = [
+        {"id": 1, "source": "pr_review",
+         "gh_url": "https://github.com/org/other-repo/pull/1",
+         "gh_repo": "org/other-repo", "status": "review requested",
+         "title": "Review PR"},
+        {"id": 2, "source": "pr_authored",
+         "gh_url": "https://github.com/org/other-repo/pull/2",
+         "gh_repo": "org/other-repo", "status": "open", "title": "My PR"},
+    ]
+    result = diff_tasks(
+        existing, incoming=[], fetched_repos=set(), review_fetch_ok=True,
+    )
+    closed_ids = {t["id"] for t in result.to_close}
+    assert closed_ids == {1}
+
+
 def test_diff_detects_project_change() -> None:
     existing = [
         {"id": 1, "gh_url": "https://github.com/org/repo/pull/1",
@@ -419,6 +442,45 @@ async def test_run_sync_closes_review_pr_as_done(
     changes, attention, error = await run_sync(
         tmp_db, AgendumConfig(orgs=["org"], repos=["org/repo"]),
     )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert task["status"] == "done"
+
+
+async def test_run_sync_closes_review_pr_when_repo_not_in_fetched_repos(
+    tmp_db: Path, monkeypatch,
+) -> None:
+    """Review task closes even when the repo drops out of discover_repos.
+
+    Once the user reviews, GitHub removes them from --review-requested, so
+    the repo is no longer surfaced by discover_repos and never makes it
+    into fetched_repos. The review task must still close.
+    """
+    init_db(tmp_db)
+    url = "https://github.com/org/other-repo/pull/100"
+    add_task(tmp_db, title="Review PR", source="pr_review",
+             status="review requested",
+             gh_url=url, gh_repo="org/other-repo")
+
+    async def fake_get_gh_username() -> str:
+        return "reviewer"
+
+    async def fake_discover_repos(orgs, gh_user) -> set:
+        return set()
+
+    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_fetch_notifications(gh_user) -> list:
+        return []
+
+    from agendum import gh
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "discover_repos", fake_discover_repos)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["org"]))
 
     task = find_task_by_gh_url(tmp_db, url)
     assert task["status"] == "done"
