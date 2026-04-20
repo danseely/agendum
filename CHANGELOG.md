@@ -1,3 +1,13 @@
+## v0.4.0 (2026-04-20)
+
+### Feat
+
+- **ui**: differentiate status colors per section
+
+### Fix
+
+- **ci**: dispatch homebrew tap from release workflow
+
 ## v0.3.0 (2026-04-19)
 
 ### Feat
