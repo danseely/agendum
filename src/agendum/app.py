@@ -645,7 +645,7 @@ class AgendumApp(App):
         now_wall = time.time()
         mono_elapsed = now_mono - self._last_sync_mono
         wall_elapsed = now_wall - self._last_sync_wall
-        interval = self._config.sync_interval if self._config else 60
+        interval = self._config.sync_interval if self._config else 120
 
         # Drift = how much more the wall clock advanced than monotonic.
         # On macOS sleep this equals the sleep duration.
