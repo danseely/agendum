@@ -518,7 +518,7 @@ async def test_run_sync_flips_reviewed_back_to_re_review_when_re_requested(tmp_d
     monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
 
-    changes, _, error = await run_sync(
+    changes, attention, error = await run_sync(
         tmp_db,
         AgendumConfig(repos=["example-org/example-repo"]),
     )
@@ -528,6 +528,213 @@ async def test_run_sync_flips_reviewed_back_to_re_review_when_re_requested(tmp_d
     assert changes >= 1
     assert len(tasks) == 1
     assert tasks[0]["status"] == "re-review requested"
+    assert attention is True
+
+
+@pytest.mark.asyncio
+async def test_run_sync_resurrects_done_review_task_when_re_requested(
+    tmp_db: Path, monkeypatch,
+) -> None:
+    """A review task that was auto-closed to 'done' must be resurrected and
+    flagged for attention when the user is re-requested as a reviewer."""
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/88"
+
+    add_task(
+        tmp_db,
+        title="Fix something",
+        source="pr_review",
+        status="done",
+        project="example-repo",
+        gh_repo="example-org/example-repo",
+        gh_url=url,
+        gh_number=88,
+        gh_author="author",
+        gh_author_name="Author",
+        tags='["review"]',
+    )
+
+    async def fake_get_gh_username() -> str:
+        return "reviewer"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "openIssues": {"nodes": []},
+                    "closedIssues": {"nodes": []},
+                    "authoredPRs": {"nodes": []},
+                    "mergedPRs": {"nodes": []},
+                    "closedPRs": {"nodes": []},
+                },
+            },
+        }
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [
+            {
+                "number": 88,
+                "title": "Fix something",
+                "url": url,
+                "repository": {"nameWithOwner": "example-org/example-repo"},
+                "author": {"login": "author"},
+            }
+        ], True
+
+    async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": number,
+                        "title": "Fix something",
+                        "url": url,
+                        "author": {"login": "author", "name": "Author Person"},
+                        "commits": {"nodes": [{"commit": {"committedDate": "2026-04-05T09:00:00Z"}}]},
+                        "reviews": {
+                            "nodes": [
+                                {
+                                    "author": {"login": "reviewer"},
+                                    "submittedAt": "2026-04-06T10:00:00Z",
+                                    "state": "COMMENTED",
+                                },
+                            ]
+                        },
+                        "timelineItems": {
+                            "nodes": [
+                                {
+                                    "createdAt": "2026-04-07T11:00:00Z",
+                                    "requestedReviewer": {"login": "reviewer"},
+                                },
+                            ]
+                        },
+                    },
+                },
+            },
+        }
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    assert error is None
+    assert changes >= 1
+    assert attention is True
+
+    active = get_active_tasks(tmp_db)
+    assert len(active) == 1
+    task = active[0]
+    assert task["gh_url"] == url
+    assert task["status"] == "re-review requested"
+    assert task["seen"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_sync_resurrects_done_review_task_without_prior_review(
+    tmp_db: Path, monkeypatch,
+) -> None:
+    """If a done review task is re-requested but the user never actually
+    reviewed (e.g. task was closed for a different reason), resurrect it
+    as 'review requested' and flag attention."""
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/99"
+
+    add_task(
+        tmp_db,
+        title="Fresh ask",
+        source="pr_review",
+        status="done",
+        project="example-repo",
+        gh_repo="example-org/example-repo",
+        gh_url=url,
+        gh_number=99,
+        gh_author="author",
+        gh_author_name="Author",
+        tags='["review"]',
+    )
+
+    async def fake_get_gh_username() -> str:
+        return "reviewer"
+
+    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "isArchived": False,
+                    "openIssues": {"nodes": []},
+                    "closedIssues": {"nodes": []},
+                    "authoredPRs": {"nodes": []},
+                    "mergedPRs": {"nodes": []},
+                    "closedPRs": {"nodes": []},
+                },
+            },
+        }
+
+    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
+        return [
+            {
+                "number": 99,
+                "title": "Fresh ask",
+                "url": url,
+                "repository": {"nameWithOwner": "example-org/example-repo"},
+                "author": {"login": "author"},
+            }
+        ], True
+
+    async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": number,
+                        "title": "Fresh ask",
+                        "url": url,
+                        "author": {"login": "author", "name": "Author Person"},
+                        "commits": {"nodes": [{"commit": {"committedDate": "2026-04-05T09:00:00Z"}}]},
+                        "reviews": {"nodes": []},  # user never reviewed
+                        "timelineItems": {"nodes": []},
+                    },
+                },
+            },
+        }
+
+    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
+    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
+    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    assert error is None
+    assert changes >= 1
+    assert attention is True
+
+    active = get_active_tasks(tmp_db)
+    assert len(active) == 1
+    assert active[0]["status"] == "review requested"
+    assert active[0]["seen"] == 0
 
 
 @pytest.mark.asyncio
