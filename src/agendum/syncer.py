@@ -371,7 +371,9 @@ async def _run_sync_once(
                 tags=item.get("tags"),
             )
         changes += 1
-        if item.get("source") == "pr_review" and item.get("status") == "review requested":
+        if item.get("source") == "pr_review" and item.get("status") in (
+            "review requested", "re-review requested",
+        ):
             attention = True
 
     for item in diff.to_update:
@@ -380,7 +382,9 @@ async def _run_sync_once(
         item["last_changed_at"] = now
         update_task(db_path, task_id, **item)
         changes += 1
-        if "status" in item and item["status"] in ("changes requested", "approved", "review received"):
+        if "status" in item and item["status"] in (
+            "changes requested", "approved", "review received", "re-review requested",
+        ):
             attention = True
 
     for item in diff.to_close:
