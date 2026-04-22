@@ -1,3 +1,9 @@
+## v0.5.1 (2026-04-22)
+
+### Fix
+
+- **syncer**: raise attention when review task flips to re-review requested
+
 ## v0.5.0 (2026-04-20)
 
 ### Feat
