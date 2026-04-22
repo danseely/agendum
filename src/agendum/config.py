@@ -25,7 +25,7 @@ exclude_repos = []
 
 [sync]
 # Poll interval in seconds
-interval = 60
+interval = 120
 
 [display]
 # Seconds after focus before marking items seen
@@ -38,7 +38,7 @@ class AgendumConfig:
     orgs: list[str] = field(default_factory=list)
     repos: list[str] = field(default_factory=list)
     exclude_repos: list[str] = field(default_factory=list)
-    sync_interval: int = 60
+    sync_interval: int = 120
     seen_delay: int = 3
 
 
@@ -124,7 +124,7 @@ def load_config(path: Path | None = None) -> AgendumConfig:
         orgs=gh.get("orgs", []),
         repos=gh.get("repos", []),
         exclude_repos=gh.get("exclude_repos", []),
-        sync_interval=sync.get("interval", 60),
+        sync_interval=sync.get("interval", 120),
         seen_delay=display.get("seen_delay", 3),
     )
 

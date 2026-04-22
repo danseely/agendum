@@ -16,7 +16,7 @@ from agendum.config import (
 
 def test_default_config_when_no_file(tmp_path: Path) -> None:
     config = load_config(tmp_path / "nonexistent.toml")
-    assert config.sync_interval == 60
+    assert config.sync_interval == 120
     assert config.seen_delay == 3
     assert config.orgs == []
     assert config.repos == []
@@ -53,7 +53,7 @@ orgs = ["example-org"]
 """)
     config = load_config(config_path)
     assert config.orgs == ["example-org"]
-    assert config.sync_interval == 60
+    assert config.sync_interval == 120
     assert config.seen_delay == 3
 
 

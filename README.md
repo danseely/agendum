@@ -205,7 +205,7 @@ orgs = ["example-org"]
 exclude_repos = []
 
 [sync]
-interval = 60
+interval = 120
 
 [display]
 seen_delay = 3
