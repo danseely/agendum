@@ -1,6 +1,15 @@
 import sqlite3
 from pathlib import Path
-from agendum.db import init_db, add_task, get_active_tasks, update_task, remove_task
+
+from agendum.db import (
+    add_task,
+    get_active_tasks,
+    get_sync_state,
+    init_db,
+    remove_task,
+    set_sync_state,
+    update_task,
+)
 
 
 def test_init_db_creates_tables(tmp_db: Path) -> None:
@@ -10,6 +19,7 @@ def test_init_db_creates_tables(tmp_db: Path) -> None:
     tables = {row[0] for row in cursor.fetchall()}
     conn.close()
     assert "tasks" in tables
+    assert "sync_state" in tables
 
 
 def test_init_db_is_idempotent(tmp_db: Path) -> None:
@@ -134,3 +144,12 @@ def test_find_tasks_by_gh_urls_returns_matches_only(tmp_db: Path) -> None:
     assert set(tasks) == {first_url, second_url}
     assert tasks[first_url]["title"] == "PR 1"
     assert tasks[second_url]["title"] == "Issue 2"
+
+
+def test_set_sync_state_upserts_value(tmp_db: Path) -> None:
+    init_db(tmp_db)
+
+    set_sync_state(tmp_db, "github_notifications_since", "2026-04-24T12:00:00+00:00")
+    set_sync_state(tmp_db, "github_notifications_since", "2026-04-24T12:05:00+00:00")
+
+    assert get_sync_state(tmp_db, "github_notifications_since") == "2026-04-24T12:05:00+00:00"

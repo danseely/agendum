@@ -8,12 +8,12 @@ import pytest
 from agendum.gh import (
     auth_status,
     auth_login,
+    capture_gh_calls,
     recover_gh_auth,
     default_gh_config_dir,
     derive_authored_pr_status,
     derive_review_pr_status,
     derive_issue_status,
-    fetch_review_detail,
     hydrate_pull_requests,
     get_gh_config_dir,
     _run_gh,
@@ -598,39 +598,54 @@ def test_extract_repo_short_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_review_detail_uses_valid_author_name_query(monkeypatch) -> None:
-    calls: list[tuple[str, ...]] = []
+async def test_capture_gh_calls_classifies_search_hydrate_and_notifications(monkeypatch) -> None:
+    outputs = iter(
+        [
+            b'{"data":{"search":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}',
+            b'{"data":{"n0":{"id":"PR_1"}}}',
+            b"[]",
+            b"author\n",
+        ]
+    )
 
-    async def fake_run_gh(*args: str) -> str:
-        calls.append(args)
-        return json.dumps(
-            {
-                "data": {
-                    "repository": {
-                        "pullRequest": {
-                            "author": {
-                                "login": "reviewer",
-                                "name": "Review Person",
-                            },
-                        },
-                    },
-                },
-            }
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, stdout: bytes):
+            self.stdout = stdout
+
+        async def communicate(self):
+            return self.stdout, b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        del args, kwargs
+        return FakeProcess(next(outputs))
+
+    monkeypatch.setattr("agendum.gh.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    with capture_gh_calls() as recorder:
+        await _run_gh(
+            "api",
+            "graphql",
+            "-f",
+            "query=query { search(type: ISSUE, query: \"org:example is:open\", first: 50) { nodes { ... on Issue { id } } pageInfo { hasNextPage endCursor } } }",
         )
+        await _run_gh(
+            "api",
+            "graphql",
+            "-f",
+            'query=query { n0: node(id: "PR_1") { ... on PullRequest { id } } }',
+        )
+        await _run_gh("api", "notifications", "--method", "GET", "-f", "all=false")
+        await _run_gh("api", "user", "--jq", ".login")
 
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
-
-    result = await fetch_review_detail("example-org", "example-repo", 34, "current-user")
-
-    assert result["data"]["repository"]["pullRequest"]["author"]["name"] == "Review Person"
-    call = calls[0]
-    query_arg = next(arg for arg in call if arg.startswith("query="))
-    assert "$user" not in query_arg
-    assert "-F" in call
-    assert "user=current-user" not in call
-    assert "... on User" in query_arg
+    assert recorder.total_calls == 4
+    assert recorder.graphql_calls == 2
+    assert recorder.graphql_search_calls == 1
+    assert recorder.graphql_hydrate_calls == 1
+    assert recorder.notification_calls == 1
+    assert recorder.rest_calls == 2
+    assert recorder.response_bytes > 0
 
 
 @pytest.mark.asyncio

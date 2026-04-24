@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_source ON tasks(source);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_gh_url ON tasks(gh_url) WHERE gh_url IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS sync_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -157,6 +163,31 @@ def find_tasks_by_gh_urls(db_path: Path, gh_urls: list[str]) -> dict[str, dict]:
         for row in rows
         if row["gh_url"] is not None
     }
+
+
+def get_sync_state(db_path: Path, key: str) -> str | None:
+    conn = _connect(db_path)
+    row = conn.execute(
+        "SELECT value FROM sync_state WHERE key = ?",
+        (key,),
+    ).fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+
+def set_sync_state(db_path: Path, key: str, value: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _connect(db_path)
+    conn.execute(
+        """INSERT INTO sync_state (key, value, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+               value = excluded.value,
+               updated_at = excluded.updated_at""",
+        (key, value, now),
+    )
+    conn.commit()
+    conn.close()
 
 
 def mark_all_seen(db_path: Path) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -15,11 +14,14 @@ from agendum.db import (
     add_task,
     find_tasks_by_gh_urls,
     get_active_tasks,
+    get_sync_state,
+    set_sync_state,
     update_task,
     TERMINAL_STATUSES,
 )
 
 log = logging.getLogger(__name__)
+_NOTIFICATIONS_SINCE_KEY = "github_notifications_since"
 
 
 @dataclass
@@ -412,127 +414,6 @@ async def _collect_search_first_sync_inputs(
     )
 
 
-async def _collect_repo_fanout_sync_inputs(
-    *,
-    config: AgendumConfig,
-    gh_user: str,
-) -> CollectedSyncInputs:
-    if config.repos:
-        repos = set(config.repos)
-    else:
-        repos = await gh.discover_repos(config.orgs, gh_user)
-    repos -= {r for r in repos if r in config.exclude_repos}
-
-    sem = asyncio.Semaphore(8)
-    incoming_tasks: list[dict] = []
-    fetched_repos: set[str] = set()
-
-    async def fetch_one_repo(repo_full: str) -> None:
-        async with sem:
-            owner, name = repo_full.split("/", 1)
-            data = await gh.fetch_repo_data(owner, name, gh_user)
-            if not data:
-                return
-            repo_data = data.get("data", {}).get("repository", {})
-            if not repo_data or repo_data.get("isArchived"):
-                return
-            fetched_repos.add(repo_full)
-            short_name = gh.extract_repo_short_name(repo_full)
-
-            for pr in repo_data.get("authoredPRs", {}).get("nodes", []):
-                task = _normalize_authored_pr_task(
-                    {
-                        **pr,
-                        "repository": {"nameWithOwner": repo_full},
-                    },
-                    gh_user,
-                )
-                if task:
-                    incoming_tasks.append(task)
-
-            for pr in repo_data.get("mergedPRs", {}).get("nodes", []):
-                author_login = (pr.get("author") or {}).get("login", "")
-                if author_login.lower() != gh_user.lower():
-                    continue
-                incoming_tasks.append({
-                    "title": "",
-                    "source": "pr_authored",
-                    "status": "merged",
-                    "gh_url": pr["url"],
-                    "gh_number": pr["number"],
-                    "project": short_name,
-                    "gh_repo": repo_full,
-                })
-            for pr in repo_data.get("closedPRs", {}).get("nodes", []):
-                author_login = (pr.get("author") or {}).get("login", "")
-                if author_login.lower() != gh_user.lower():
-                    continue
-                incoming_tasks.append({
-                    "title": "",
-                    "source": "pr_authored",
-                    "status": "closed",
-                    "gh_url": pr["url"],
-                    "gh_number": pr["number"],
-                    "project": short_name,
-                    "gh_repo": repo_full,
-                })
-
-            for issue in repo_data.get("openIssues", {}).get("nodes", []):
-                incoming_tasks.append(
-                    _normalize_issue_task(
-                        {
-                            **issue,
-                            "repository": {"nameWithOwner": repo_full},
-                        }
-                    )
-                )
-
-            for issue in repo_data.get("closedIssues", {}).get("nodes", []):
-                incoming_tasks.append({
-                    "title": "",
-                    "source": "issue",
-                    "status": "closed",
-                    "gh_url": issue["url"],
-                    "gh_number": issue["number"],
-                    "project": short_name,
-                    "gh_repo": repo_full,
-                })
-
-    await asyncio.gather(*(fetch_one_repo(r) for r in repos))
-
-    review_prs, review_fetch_ok = await gh.discover_review_prs(config.orgs, gh_user)
-    if config.repos and not config.orgs:
-        review_fetch_ok = False
-    for pr_info in review_prs:
-        repo_full = (pr_info.get("repository") or {}).get("nameWithOwner", "")
-        if not _repo_in_scope(repo_full, config):
-            continue
-        owner, name = repo_full.split("/", 1)
-        detail_data = await gh.fetch_review_detail(owner, name, pr_info["number"], gh_user)
-        pr_detail = (detail_data.get("data", {}).get("repository", {}).get("pullRequest") or {})
-        if not pr_detail:
-            review_fetch_ok = False
-            continue
-        incoming_tasks.append(
-            _normalize_review_pr_task(
-                {
-                    **pr_detail,
-                    "repository": {"nameWithOwner": repo_full},
-                },
-                gh_user,
-            )
-        )
-
-    if not review_fetch_ok:
-        log.warning("Review PR discovery had failures — skipping review task cleanup")
-
-    return CollectedSyncInputs(
-        incoming_tasks=incoming_tasks,
-        fetched_repos=fetched_repos,
-        review_fetch_ok=review_fetch_ok,
-    )
-
-
 async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str | None]:
     """
     Execute a full sync cycle.
@@ -543,7 +424,20 @@ async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str
         return 0, False, None
 
     with gh.use_gh_config_dir(_workspace_gh_config_dir(db_path)):
-        return await _run_sync_once(db_path, config)
+        with gh.capture_gh_calls() as gh_calls:
+            result = await _run_sync_once(db_path, config)
+
+    log.info(
+        "GitHub API usage: total=%d graphql=%d search=%d hydrate=%d notifications=%d rest=%d bytes=%d",
+        gh_calls.total_calls,
+        gh_calls.graphql_calls,
+        gh_calls.graphql_search_calls,
+        gh_calls.graphql_hydrate_calls,
+        gh_calls.notification_calls,
+        gh_calls.rest_calls,
+        gh_calls.response_bytes,
+    )
+    return result
 
 
 def _workspace_gh_config_dir(db_path: Path) -> Path:
@@ -641,7 +535,16 @@ async def _run_sync_once(
         update_task(db_path, item["id"], status=terminal)
         changes += 1
 
-    notifications = await gh.fetch_notifications(gh_user)
+    notifications_since = get_sync_state(db_path, _NOTIFICATIONS_SINCE_KEY)
+    notification_fetch_started_at = datetime.now(timezone.utc).isoformat()
+    notifications, notifications_ok = await gh.fetch_notifications(
+        gh_user,
+        since=notifications_since,
+    )
+    if notifications_ok:
+        set_sync_state(db_path, _NOTIFICATIONS_SINCE_KEY, notification_fetch_started_at)
+    else:
+        log.warning("Notification fetch failed — keeping previous notification cursor")
     notification_urls: list[str] = []
     for notif in notifications:
         reason = notif.get("reason", "")

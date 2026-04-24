@@ -8,8 +8,10 @@ from agendum.db import (
     add_task,
     find_tasks_by_gh_urls,
     get_active_tasks,
+    get_sync_state,
     init_db,
     mark_all_seen,
+    set_sync_state,
     update_task,
 )
 
@@ -102,3 +104,28 @@ def test_find_tasks_by_gh_urls_empty_input_returns_empty_mapping(tmp_db: Path) -
     init_db(tmp_db)
 
     assert find_tasks_by_gh_urls(tmp_db, []) == {}
+
+
+def test_get_sync_state_returns_none_for_missing_key(tmp_db: Path) -> None:
+    init_db(tmp_db)
+
+    assert get_sync_state(tmp_db, "missing") is None
+
+
+def test_set_sync_state_tracks_updated_at(tmp_db: Path) -> None:
+    init_db(tmp_db)
+
+    set_sync_state(tmp_db, "github_notifications_since", "2026-04-24T12:00:00+00:00")
+
+    import sqlite3
+
+    conn = sqlite3.connect(tmp_db)
+    row = conn.execute(
+        "SELECT value, updated_at FROM sync_state WHERE key = ?",
+        ("github_notifications_since",),
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row[0] == "2026-04-24T12:00:00+00:00"
+    assert row[1] is not None

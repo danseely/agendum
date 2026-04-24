@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -22,8 +23,59 @@ _TASK_GH_CONFIG_DIR: ContextVar[Path | None | object] = ContextVar(
     "agendum_task_gh_config_dir",
     default=_GH_CONFIG_DIR_UNSET,
 )
+_TASK_GH_CALL_RECORDER: ContextVar["GhCallRecorder | None"] = ContextVar(
+    "agendum_task_gh_call_recorder",
+    default=None,
+)
 DEFAULT_SEARCH_PAGE_SIZE = 50
 DEFAULT_HYDRATE_BATCH_SIZE = 25
+
+
+@dataclass
+class GhCallRecorder:
+    total_calls: int = 0
+    graphql_calls: int = 0
+    graphql_search_calls: int = 0
+    graphql_hydrate_calls: int = 0
+    rest_calls: int = 0
+    notification_calls: int = 0
+    response_bytes: int = 0
+
+    def record(self, args: tuple[str, ...], stdout: bytes) -> None:
+        self.total_calls += 1
+        self.response_bytes += len(stdout)
+
+        if args[:2] == ("api", "graphql"):
+            self.graphql_calls += 1
+            query = next(
+                (arg.split("=", 1)[1] for arg in args if arg.startswith("query=")),
+                "",
+            )
+            if "search(type: ISSUE" in query:
+                self.graphql_search_calls += 1
+            elif "node(id:" in query:
+                self.graphql_hydrate_calls += 1
+            return
+
+        if args[:2] == ("api", "notifications"):
+            self.notification_calls += 1
+
+        if args and args[0] == "api":
+            self.rest_calls += 1
+
+
+def get_gh_call_recorder() -> GhCallRecorder | None:
+    return _TASK_GH_CALL_RECORDER.get()
+
+
+@contextmanager
+def capture_gh_calls() -> Iterator[GhCallRecorder]:
+    recorder = GhCallRecorder()
+    token = _TASK_GH_CALL_RECORDER.set(recorder)
+    try:
+        yield recorder
+    finally:
+        _TASK_GH_CALL_RECORDER.reset(token)
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +264,8 @@ async def _run_gh(*args: str) -> str:
         env=env,
     )
     stdout, stderr = await proc.communicate()
+    if recorder := get_gh_call_recorder():
+        recorder.record(args, stdout)
     if proc.returncode != 0:
         log.warning("gh %s failed: %s", " ".join(args), stderr.decode().strip())
         return ""
@@ -357,124 +411,6 @@ def use_gh_config_dir(gh_config_dir: Path | None) -> Iterator[None]:
     finally:
         _TASK_GH_CONFIG_DIR.reset(token)
 
-
-# ---------------------------------------------------------------------------
-# GraphQL query for a single repo
-# ---------------------------------------------------------------------------
-
-REPO_QUERY = """
-query($owner: String!, $name: String!, $user: String!) {
-  repository(owner: $owner, name: $name) {
-    isArchived
-    openIssues: issues(
-      first: 50, states: OPEN,
-      filterBy: {assignee: $user}
-    ) {
-      nodes {
-        number title url state createdAt
-        labels(first: 10) { nodes { name } }
-        timelineItems(last: 20, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT]) {
-          nodes {
-            ... on ConnectedEvent { subject { ... on PullRequest { url } } }
-            ... on CrossReferencedEvent { source { ... on PullRequest { url } } }
-          }
-        }
-      }
-    }
-    closedIssues: issues(
-      first: 20, states: CLOSED,
-      filterBy: {assignee: $user}
-      orderBy: {field: UPDATED_AT, direction: DESC}
-    ) {
-      nodes { number url state }
-    }
-    authoredPRs: pullRequests(
-      first: 50, states: OPEN,
-      orderBy: {field: UPDATED_AT, direction: DESC}
-    ) {
-      nodes {
-        number title url state isDraft createdAt
-        headRefName
-        author { login }
-        reviewDecision
-        reviewRequests(first: 10) { totalCount }
-        commits(last: 1) {
-          nodes {
-            commit {
-              committedDate
-            }
-          }
-        }
-        reviews(last: 20) {
-          nodes {
-            id
-            state
-            submittedAt
-            author { login }
-          }
-        }
-        reviewThreads(last: 50) {
-          nodes {
-            isResolved
-            isOutdated
-            comments(last: 20) {
-              nodes {
-                createdAt
-                pullRequestReview { id }
-                author { login }
-              }
-            }
-          }
-        }
-        labels(first: 10) { nodes { name } }
-      }
-    }
-    mergedPRs: pullRequests(
-      first: 20, states: MERGED,
-      orderBy: {field: UPDATED_AT, direction: DESC}
-    ) {
-      nodes { number url state author { login } }
-    }
-    closedPRs: pullRequests(
-      first: 20, states: CLOSED,
-      orderBy: {field: UPDATED_AT, direction: DESC}
-    ) {
-      nodes { number url state author { login } }
-    }
-  }
-}
-"""
-
-REVIEW_QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      number title url state createdAt isDraft
-      headRefName
-      author {
-        login
-        ... on User {
-          name
-        }
-      }
-      commits(last: 1) { nodes { commit { committedDate } } }
-      reviews(first: 50) {
-        nodes { author { login } submittedAt state }
-      }
-      timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) {
-        nodes {
-          ... on ReviewRequestedEvent {
-            createdAt
-            requestedReviewer {
-              ... on User { login }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-"""
 
 SEARCH_PULL_REQUESTS_QUERY = """
 query($query: String!, $first: Int!, $after: String) {
@@ -740,36 +676,6 @@ async def _hydrate_node_batches(
     return items, ok
 
 
-async def fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-    """Fetch all relevant data for a single repo via GraphQL."""
-    payload = _load_json_payload(
-        await _run_gh(
-        "api", "graphql",
-        "-f", f"query={REPO_QUERY}",
-        "-F", f"owner={owner}",
-        "-F", f"name={name}",
-        "-F", f"user={gh_user}",
-        ),
-        context=f"repo data for {owner}/{name}",
-    )
-    return payload or {}
-
-
-async def fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
-    """Fetch review detail for a single PR to determine review status."""
-    payload = _load_json_payload(
-        await _run_gh(
-        "api", "graphql",
-        "-f", f"query={REVIEW_QUERY}",
-        "-F", f"owner={owner}",
-        "-F", f"name={name}",
-        "-F", f"number={number}",
-        ),
-        context=f"review detail for {owner}/{name}#{number}",
-    )
-    return payload or {}
-
-
 async def search_authored_prs(
     orgs: list[str],
     gh_user: str,
@@ -888,94 +794,26 @@ async def hydrate_issues(
     )
 
 
-# ---------------------------------------------------------------------------
-# Discover repos and review requests
-# ---------------------------------------------------------------------------
+async def fetch_notifications(
+    gh_user: str,
+    *,
+    since: str | None = None,
+) -> tuple[list[dict], bool]:
+    """Fetch unread GitHub notifications since an optional timestamp."""
+    del gh_user  # The notifications endpoint is scoped to the authenticated user.
 
-async def discover_repos(orgs: list[str], gh_user: str) -> set[str]:
-    """Find all repos where the user has activity, across all orgs."""
-    repos: set[str] = set()
-    for org in orgs:
-        out = await _run_gh(
-            "search", "prs",
-            "--author", gh_user,
-            "--owner", org,
-            "--state", "open",
-            "--json", "repository",
-            "--limit", "200",
-        )
-        if out:
-            for item in json.loads(out):
-                repo = item.get("repository", {})
-                name = repo.get("nameWithOwner") or repo.get("name", "")
-                if name:
-                    repos.add(name)
-
-        out = await _run_gh(
-            "search", "issues",
-            "--assignee", gh_user,
-            "--owner", org,
-            "--state", "open",
-            "--json", "repository",
-            "--limit", "200",
-        )
-        if out:
-            for item in json.loads(out):
-                repo = item.get("repository", {})
-                name = repo.get("nameWithOwner") or repo.get("name", "")
-                if name:
-                    repos.add(name)
-
-        out = await _run_gh(
-            "search", "prs",
-            "--review-requested", gh_user,
-            "--owner", org,
-            "--state", "open",
-            "--json", "repository",
-            "--limit", "200",
-        )
-        if out:
-            for item in json.loads(out):
-                repo = item.get("repository", {})
-                name = repo.get("nameWithOwner") or repo.get("name", "")
-                if name:
-                    repos.add(name)
-
-    return repos
-
-
-async def discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-    """Find all PRs where user's review is requested, across all orgs.
-
-    Returns (prs, ok) where *ok* is False if any org query failed,
-    indicating the result set may be incomplete.
-    """
-    prs: list[dict] = []
-    ok = True
-    for org in orgs:
-        out = await _run_gh(
-            "search", "prs",
-            "--review-requested", gh_user,
-            "--owner", org,
-            "--state", "open",
-            "--json", "number,title,url,repository,author",
-            "--limit", "200",
-        )
-        if out:
-            prs.extend(json.loads(out))
-        else:
-            ok = False
-    return prs, ok
-
-
-async def fetch_notifications(gh_user: str) -> list[dict]:
-    """Fetch unread GitHub notifications."""
-    payload = _load_json_payload(
-        await _run_gh(
+    args = [
         "api", "notifications",
         "--method", "GET",
         "-f", "all=false",
-        ),
+    ]
+    if since:
+        args.extend(["-f", f"since={since}"])
+
+    payload = _load_json_payload(
+        await _run_gh(*args),
         context="notifications",
     )
-    return payload or []
+    if payload is None:
+        return [], False
+    return payload, True

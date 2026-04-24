@@ -1,10 +1,11 @@
 import json
+import logging
 from pathlib import Path
 
 import pytest
 
 from agendum.config import AgendumConfig
-from agendum.db import add_task, find_task_by_gh_url, get_active_tasks, init_db
+from agendum.db import add_task, find_task_by_gh_url, get_active_tasks, get_sync_state, init_db
 from agendum.syncer import diff_tasks, run_sync
 
 
@@ -155,9 +156,14 @@ def install_repo_only_search_first_mocks(
     async def fake_hydrate_issues(node_ids: list[str]) -> tuple[list[dict], bool]:
         return [issues_by_id[node_id] for node_id in node_ids if node_id in issues_by_id], True
 
-    async def fake_fetch_notifications(seen_user: str) -> list[dict]:
+    async def fake_fetch_notifications(
+        seen_user: str,
+        *,
+        since: str | None = None,
+    ) -> tuple[list[dict], bool]:
         assert seen_user == gh_user
-        return list(notifications or [])
+        del since
+        return list(notifications or []), True
 
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
     monkeypatch.setattr(gh, "search_authored_prs", fake_search_authored_prs)
@@ -322,12 +328,6 @@ async def test_run_sync_org_sync_uses_search_first_helpers(tmp_db: Path, monkeyp
 
     pr_hydrate_calls: list[tuple[str, ...]] = []
     issue_hydrate_calls: list[tuple[str, ...]] = []
-    legacy_calls = {
-        "discover_repos": 0,
-        "fetch_repo_data": 0,
-        "discover_review_prs": 0,
-        "fetch_review_detail": 0,
-    }
 
     authored_url = "https://github.com/org/authored-repo/pull/1"
     issue_url = "https://github.com/org/issue-repo/issues/2"
@@ -414,26 +414,13 @@ async def test_run_sync_org_sync_uses_search_first_helpers(tmp_db: Path, monkeyp
         issue_hydrate_calls.append(tuple(node_ids))
         return [issue for node_id in node_ids if node_id == "ISSUE_1"], True
 
-    async def fake_discover_repos(orgs: list[str], gh_user: str) -> set[str]:
-        legacy_calls["discover_repos"] += 1
-        return {"org/legacy"}
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        legacy_calls["fetch_repo_data"] += 1
-        return {}
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        legacy_calls["discover_review_prs"] += 1
+    async def fake_fetch_notifications(
+        gh_user: str,
+        *,
+        since: str | None = None,
+    ) -> tuple[list[dict], bool]:
+        del gh_user, since
         return [], True
-
-    async def fake_fetch_review_detail(
-        owner: str, name: str, number: int, gh_user: str,
-    ) -> dict:
-        legacy_calls["fetch_review_detail"] += 1
-        return {}
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
 
     from agendum import gh
 
@@ -446,10 +433,6 @@ async def test_run_sync_org_sync_uses_search_first_helpers(tmp_db: Path, monkeyp
     monkeypatch.setattr(gh, "search_review_requested_prs", fake_search_review_requested_prs)
     monkeypatch.setattr(gh, "hydrate_pull_requests", fake_hydrate_pull_requests)
     monkeypatch.setattr(gh, "hydrate_issues", fake_hydrate_issues)
-    monkeypatch.setattr(gh, "discover_repos", fake_discover_repos)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
 
     changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["org"]))
@@ -462,12 +445,6 @@ async def test_run_sync_org_sync_uses_search_first_helpers(tmp_db: Path, monkeyp
         "PR_REVIEW_1",
     }
     assert issue_hydrate_calls == [("ISSUE_1",)]
-    assert legacy_calls == {
-        "discover_repos": 0,
-        "fetch_repo_data": 0,
-        "discover_review_prs": 0,
-        "fetch_review_detail": 0,
-    }
 
     authored_task = find_task_by_gh_url(tmp_db, authored_url)
     assert authored_task is not None
@@ -515,6 +492,7 @@ async def test_run_sync_reports_missing_gh_auth(tmp_db: Path, monkeypatch) -> No
 async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
     tmp_db: Path,
     monkeypatch,
+    caplog,
 ) -> None:
     init_db(tmp_db)
 
@@ -525,29 +503,40 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
     observed_gh_dirs: list[Path | None] = []
     switched = False
 
-    async def fake_run_gh(*args: str) -> str:
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, stdout: bytes):
+            self.stdout = stdout
+
+        async def communicate(self):
+            return self.stdout, b""
+
+    async def fake_create_subprocess_exec(*args: str, **kwargs):
         nonlocal switched
         observed_gh_dirs.append(gh.get_gh_config_dir())
         if not switched:
             gh.set_gh_config_dir(switched_gh_dir)
             switched = True
 
-        if args == ("api", "user", "--jq", ".login"):
-            return "author\n"
-        if args[:2] == ("api", "graphql"):
-            return json.dumps({
+        gh_args = args[1:]
+        if gh_args == ("api", "user", "--jq", ".login"):
+            return FakeProcess(b"author\n")
+        if gh_args[:2] == ("api", "graphql"):
+            return FakeProcess(json.dumps({
                 "data": {
                     "search": {
                         "pageInfo": {"hasNextPage": False, "endCursor": None},
                         "nodes": [],
                     },
                 },
-            })
-        if args[:2] == ("api", "notifications"):
-            return "[]"
-        raise AssertionError(f"Unexpected gh call: {args}")
+            }).encode())
+        if gh_args[:2] == ("api", "notifications"):
+            return FakeProcess(b"[]")
+        raise AssertionError(f"Unexpected gh call: {gh_args}")
 
-    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+    monkeypatch.setattr("agendum.gh.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+    caplog.set_level(logging.INFO)
 
     gh.set_gh_config_dir(workspace_gh_dir)
     try:
@@ -563,6 +552,90 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
     assert error is None
     assert observed_gh_dirs
     assert all(path == workspace_gh_dir for path in observed_gh_dirs)
+    assert any(
+        "GitHub API usage: total=8 graphql=6 search=6 hydrate=0 notifications=1 rest=2"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_sync_persists_incremental_notification_cursor(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    repo = "example-org/example-repo"
+    observed_since: list[str | None] = []
+
+    install_repo_only_search_first_mocks(
+        monkeypatch,
+        repos=[repo],
+        gh_user="reviewer",
+    )
+
+    from agendum import gh
+
+    async def fake_fetch_notifications(
+        gh_user: str,
+        *,
+        since: str | None = None,
+    ) -> tuple[list[dict], bool]:
+        assert gh_user == "reviewer"
+        observed_since.append(since)
+        return [], True
+
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    first_changes, _, first_error = await run_sync(tmp_db, AgendumConfig(repos=[repo]))
+    first_cursor = get_sync_state(tmp_db, "github_notifications_since")
+
+    second_changes, _, second_error = await run_sync(tmp_db, AgendumConfig(repos=[repo]))
+
+    assert first_changes == 0
+    assert second_changes == 0
+    assert first_error is None
+    assert second_error is None
+    assert first_cursor is not None
+    assert observed_since == [None, first_cursor]
+
+
+@pytest.mark.asyncio
+async def test_run_sync_preserves_notification_cursor_when_fetch_fails(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    repo = "example-org/example-repo"
+    original_cursor = "2026-04-24T12:00:00+00:00"
+
+    install_repo_only_search_first_mocks(
+        monkeypatch,
+        repos=[repo],
+        gh_user="reviewer",
+    )
+    from agendum import gh
+    from agendum.db import set_sync_state
+
+    set_sync_state(tmp_db, "github_notifications_since", original_cursor)
+
+    async def fake_fetch_notifications(
+        gh_user: str,
+        *,
+        since: str | None = None,
+    ) -> tuple[list[dict], bool]:
+        assert gh_user == "reviewer"
+        assert since == original_cursor
+        return [], False
+
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(repos=[repo]))
+
+    assert changes == 0
+    assert attention is False
+    assert error is None
+    assert get_sync_state(tmp_db, "github_notifications_since") == original_cursor
 
 
 @pytest.mark.asyncio

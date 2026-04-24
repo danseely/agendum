@@ -163,13 +163,14 @@ async def test_run_sync_notification_marks_seen_task_unseen(
     async def fake_hydrate_issues(node_ids) -> tuple[list, bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
         return [{
             "reason": "comment",
             "subject": {
                 "url": "https://api.github.com/repos/org/repo/pulls/5",
             },
-        }]
+        }], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
@@ -246,8 +247,9 @@ async def test_run_sync_excludes_repos(tmp_db: Path, monkeypatch) -> None:
     async def fake_hydrate_issues(node_ids: list[str]) -> tuple[list[dict], bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
@@ -325,8 +327,9 @@ async def test_run_sync_repo_only_excludes_repos(tmp_db: Path, monkeypatch) -> N
     async def fake_hydrate_issues(node_ids: list[str]) -> tuple[list[dict], bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
@@ -405,8 +408,9 @@ async def test_run_sync_attention_on_status_change_to_approved(
     async def fake_hydrate_issues(node_ids) -> tuple[list, bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
@@ -455,8 +459,6 @@ async def test_run_sync_org_sync_incomplete_slice_keeps_existing_task(
         "search_assigned_issues": 0,
         "hydrate_pull_requests": 0,
         "hydrate_issues": 0,
-        "discover_repos": 0,
-        "fetch_repo_data": 0,
     }
 
     async def fake_get_gh_username() -> str:
@@ -494,19 +496,9 @@ async def test_run_sync_org_sync_incomplete_slice_keeps_existing_task(
         calls["hydrate_issues"] += 1
         return [], False
 
-    async def fake_discover_repos(orgs, gh_user) -> set:
-        calls["discover_repos"] += 1
-        return {repo}
-
-    async def fake_fetch_repo_data(owner, name, gh_user) -> dict:
-        calls["fetch_repo_data"] += 1
-        return make_empty_repo_payload()
-
-    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
         return [], True
-
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
 
     from agendum import gh
 
@@ -519,9 +511,6 @@ async def test_run_sync_org_sync_incomplete_slice_keeps_existing_task(
     monkeypatch.setattr(gh, "search_review_requested_prs", fake_search_review_requested_prs)
     monkeypatch.setattr(gh, "hydrate_pull_requests", fake_hydrate_pull_requests)
     monkeypatch.setattr(gh, "hydrate_issues", fake_hydrate_issues)
-    monkeypatch.setattr(gh, "discover_repos", fake_discover_repos)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
 
     changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["org"]))
@@ -533,8 +522,6 @@ async def test_run_sync_org_sync_incomplete_slice_keeps_existing_task(
     assert calls["search_assigned_issues"] == 1
     if source == "issue":
         assert calls["hydrate_issues"] == 1
-    assert calls["discover_repos"] == 0
-    assert calls["fetch_repo_data"] == 0
 
     task = find_task_by_gh_url(tmp_db, url)
     assert task is not None
@@ -578,8 +565,9 @@ async def test_run_sync_preserves_tasks_when_repo_search_is_incomplete(
     async def fake_hydrate_issues(node_ids) -> tuple[list, bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
@@ -638,8 +626,9 @@ async def test_run_sync_preserves_review_tasks_when_review_fetch_fails(
     async def fake_hydrate_issues(node_ids) -> tuple[list, bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
@@ -714,8 +703,9 @@ async def test_run_sync_preserves_review_tasks_when_review_detail_fetch_fails(
     async def fake_hydrate_issues(node_ids) -> tuple[list, bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
 
@@ -749,10 +739,6 @@ async def test_run_sync_repo_only_uses_search_first_path(
 ) -> None:
     init_db(tmp_db)
 
-    legacy_calls = {
-        "fetch_repo_data": 0,
-        "discover_review_prs": 0,
-    }
     search_calls = {
         "search_authored_prs": 0,
         "search_merged_authored_prs": 0,
@@ -833,16 +819,9 @@ async def test_run_sync_repo_only_uses_search_first_path(
             "repository": {"nameWithOwner": "org/repo"},
         }], True
 
-    async def fake_discover_review_prs(orgs, gh_user) -> tuple[list, bool]:
-        legacy_calls["discover_review_prs"] += 1
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
         return [], True
-
-    async def fake_fetch_repo_data(owner, name, gh_user) -> dict:
-        legacy_calls["fetch_repo_data"] += 1
-        return {}
-
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
 
     from agendum import gh
 
@@ -855,8 +834,6 @@ async def test_run_sync_repo_only_uses_search_first_path(
     monkeypatch.setattr(gh, "search_review_requested_prs", fake_search_review_requested_prs)
     monkeypatch.setattr(gh, "hydrate_pull_requests", fake_hydrate_pull_requests)
     monkeypatch.setattr(gh, "hydrate_issues", fake_hydrate_issues)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
 
     changes, attention, error = await run_sync(tmp_db, AgendumConfig(repos=["org/repo"]))
@@ -864,10 +841,6 @@ async def test_run_sync_repo_only_uses_search_first_path(
     assert changes == 2
     assert attention is False
     assert error is None
-    assert legacy_calls == {
-        "fetch_repo_data": 0,
-        "discover_review_prs": 0,
-    }
     assert search_calls == {
         "search_authored_prs": 1,
         "search_merged_authored_prs": 1,
@@ -930,8 +903,9 @@ async def test_run_sync_repo_only_preserves_review_tasks_on_incomplete_review_se
     async def fake_hydrate_issues(node_ids) -> tuple[list, bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
 
@@ -992,8 +966,9 @@ async def test_run_sync_closes_review_pr_as_done(
     async def fake_hydrate_issues(node_ids: list[str]) -> tuple[list[dict], bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
@@ -1018,11 +993,11 @@ async def test_run_sync_closes_review_pr_as_done(
 async def test_run_sync_closes_review_pr_when_repo_not_in_fetched_repos(
     tmp_db: Path, monkeypatch,
 ) -> None:
-    """Review task closes even when the repo drops out of discover_repos.
+    """Review task closes even when its repo is not in fetched_repos.
 
-    Once the user reviews, GitHub removes them from --review-requested, so
-    the repo is no longer surfaced by discover_repos and never makes it
-    into fetched_repos. The review task must still close.
+    Once the user reviews, GitHub removes them from the review-requested
+    search results, so the repo may never land in fetched_repos. The
+    review task must still close.
     """
     init_db(tmp_db)
     url = "https://github.com/org/other-repo/pull/100"
@@ -1057,8 +1032,9 @@ async def test_run_sync_closes_review_pr_when_repo_not_in_fetched_repos(
     async def fake_hydrate_issues(node_ids: list[str]) -> tuple[list[dict], bool]:
         return [], True
 
-    async def fake_fetch_notifications(gh_user) -> list:
-        return []
+    async def fake_fetch_notifications(gh_user, *, since: str | None = None) -> tuple[list, bool]:
+        del gh_user, since
+        return [], True
 
     from agendum import gh
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
