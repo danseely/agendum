@@ -73,7 +73,9 @@ jobs:
         if: steps.next.outputs.skip != 'true'
         env:
           NEXT_VERSION: ${{ steps.next.outputs.next_version }}
-        run: uv run cz bump --yes --changelog --files-only "${NEXT_VERSION}"
+        run: |
+          uv run cz bump --yes --changelog --files-only "${NEXT_VERSION}"
+          uv lock
 
       - name: Create or update release PR
         if: steps.next.outputs.skip != 'true'
@@ -88,6 +90,7 @@ jobs:
 
             This PR was created from the latest merged changes on `main` and contains:
             - version file updates
+            - lockfile updates
             - changelog updates
 
             This is a rolling release PR. Additional merges to `main` will update this PR in place, including recalculating the release version when needed.
