@@ -1,5 +1,7 @@
+import inspect
 import json
 from pathlib import Path
+import re
 from types import SimpleNamespace
 import pytest
 
@@ -12,6 +14,7 @@ from agendum.gh import (
     derive_review_pr_status,
     derive_issue_status,
     fetch_review_detail,
+    hydrate_pull_requests,
     get_gh_config_dir,
     _run_gh,
     parse_author_first_name,
@@ -21,6 +24,19 @@ from agendum.gh import (
     set_gh_config_dir,
     use_gh_config_dir,
 )
+
+
+async def call_gh_primitive(name: str, *args, **kwargs):
+    from agendum import gh
+
+    result = getattr(gh, name)(*args, **kwargs)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def query_arg(args: tuple[str, ...]) -> str:
+    return next(arg.split("=", 1)[1] for arg in args if arg.startswith("query="))
 
 
 def authored_pr_status_with_review_feedback(**overrides: object) -> str:
@@ -615,3 +631,167 @@ async def test_fetch_review_detail_uses_valid_author_name_query(monkeypatch) -> 
     assert "-F" in call
     assert "user=current-user" not in call
     assert "... on User" in query_arg
+
+
+@pytest.mark.asyncio
+async def test_hydrate_pull_requests_uses_node_alias_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "n0": {"id": "PR_node_1", "title": "One"},
+                    "n1": {"id": "PR_node_2", "title": "Two"},
+                },
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    result, ok = await hydrate_pull_requests(["PR_node_1", "PR_node_2"])
+
+    assert ok is True
+    assert [item["id"] for item in result] == ["PR_node_1", "PR_node_2"]
+    query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
+    assert "n0: node(id: \"PR_node_1\")" in query_arg
+    assert "n1: node(id: \"PR_node_2\")" in query_arg
+    assert "... on PullRequest" in query_arg
+
+
+@pytest.mark.asyncio
+async def test_search_authored_prs_paginates_and_dedupes_by_node_id(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    responses = [
+        {
+            "data": {
+                "search": {
+                    "pageInfo": {
+                        "hasNextPage": True,
+                        "endCursor": "CURSOR_A",
+                    },
+                    "nodes": [
+                        {"id": "PR_1", "number": 1, "title": "One"},
+                        {"id": "PR_2", "number": 2, "title": "Two"},
+                    ],
+                },
+            },
+        },
+        {
+            "data": {
+                "search": {
+                    "pageInfo": {
+                        "hasNextPage": False,
+                        "endCursor": None,
+                    },
+                    "nodes": [
+                        {"id": "PR_2", "number": 2, "title": "Two"},
+                        {"id": "PR_3", "number": 3, "title": "Three"},
+                    ],
+                },
+            },
+        },
+        {
+            "data": {
+                "search": {
+                    "pageInfo": {
+                        "hasNextPage": False,
+                        "endCursor": None,
+                    },
+                    "nodes": [
+                        {"id": "PR_3", "number": 3, "title": "Three"},
+                    ],
+                },
+            },
+        },
+    ]
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(responses.pop(0))
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    prs, ok = await call_gh_primitive("search_authored_prs", ["org-a", "org-b"], "dan", page_size=2)
+
+    assert ok is True
+    assert [pr["id"] for pr in prs] == ["PR_1", "PR_2", "PR_3"]
+    assert len(calls) == 3
+    assert "pageInfo" in query_arg(calls[0])
+    assert "CURSOR_A" in " ".join(calls[1])
+
+
+@pytest.mark.asyncio
+async def test_search_assigned_issues_uses_issue_search_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "search": {
+                        "pageInfo": {
+                            "hasNextPage": False,
+                            "endCursor": None,
+                        },
+                        "nodes": [
+                            {"id": "ISSUE_1", "number": 11, "title": "Assigned"},
+                        ],
+                    },
+                },
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    issues, ok = await call_gh_primitive("search_assigned_issues", ["org-a"], "dan", page_size=7)
+
+    assert ok is True
+    assert [issue["id"] for issue in issues] == ["ISSUE_1"]
+    assert "search(type: ISSUE" in query_arg(calls[0])
+
+
+@pytest.mark.asyncio
+async def test_hydrate_pull_requests_batches_and_skips_nulls(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    response_nodes = [
+        [
+            {"id": "PR_1", "number": 1, "title": "One"},
+            None,
+        ],
+        [
+            {"id": "PR_3", "number": 3, "title": "Three"},
+        ],
+    ]
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        aliases = re.findall(r"(\w+)\s*:\s*node\(", query_arg(args))
+        nodes = response_nodes[len(calls) - 1]
+        return json.dumps(
+            {
+                "data": {
+                    alias: node
+                    for alias, node in zip(aliases, nodes)
+                },
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    prs, ok = await call_gh_primitive("hydrate_pull_requests", ["PR_1", "PR_2", "PR_3"], batch_size=2)
+
+    assert ok is True
+    assert [pr["id"] for pr in prs] == ["PR_1", "PR_3"]
+    assert len(calls) == 2
+    assert len(re.findall(r"(\w+)\s*:\s*node\(", query_arg(calls[0]))) == 2

@@ -13,7 +13,7 @@ from agendum import gh
 from agendum.config import AgendumConfig
 from agendum.db import (
     add_task,
-    find_task_by_gh_url,
+    find_tasks_by_gh_urls,
     get_active_tasks,
     update_task,
     TERMINAL_STATUSES,
@@ -27,6 +27,13 @@ class SyncResult:
     to_create: list[dict] = field(default_factory=list)
     to_update: list[dict] = field(default_factory=list)
     to_close: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class CollectedSyncInputs:
+    incoming_tasks: list[dict]
+    fetched_repos: set[str]
+    review_fetch_ok: bool
 
 
 def diff_tasks(
@@ -99,35 +106,317 @@ def diff_tasks(
     return result
 
 
-async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str | None]:
-    """
-    Execute a full sync cycle.
-    Returns (changes_count, has_attention_items, error_message).
-    """
-    if not config.orgs and not config.repos:
-        log.warning("No orgs or repos configured — skipping sync")
-        return 0, False, None
-
-    with gh.use_gh_config_dir(_workspace_gh_config_dir(db_path)):
-        return await _run_sync_once(db_path, config)
+def _repo_owner(repo_full: str) -> str:
+    return repo_full.split("/", 1)[0] if "/" in repo_full else ""
 
 
-def _workspace_gh_config_dir(db_path: Path) -> Path:
-    """Map a workspace DB path to its colocated gh auth/config directory."""
-    return db_path.parent / "gh"
+def _repo_in_scope(repo_full: str, config: AgendumConfig) -> bool:
+    if not repo_full or repo_full in config.exclude_repos:
+        return False
+    if config.repos and repo_full not in config.repos:
+        return False
+    return True
 
 
-async def _run_sync_once(
-    db_path: Path,
+def _search_scope_owners(config: AgendumConfig) -> list[str]:
+    owners = {org for org in config.orgs if org}
+    owners.update(
+        owner
+        for repo in config.repos
+        if repo not in config.exclude_repos
+        if (owner := _repo_owner(repo))
+    )
+    return sorted(owners)
+
+
+def _search_item_repo(item: dict) -> str:
+    repo = item.get("repository", {})
+    return repo.get("nameWithOwner", "")
+
+
+def _covered_repos_for_search_sync(
+    existing: list[dict],
+    incoming_tasks: list[dict],
     config: AgendumConfig,
-) -> tuple[int, bool, str | None]:
-    """Execute a full sync cycle with the gh workspace already bound."""
+) -> set[str]:
+    if config.repos:
+        return {repo for repo in config.repos if repo not in config.exclude_repos}
 
-    gh_user = await gh.get_gh_username()
-    if not gh_user:
-        log.error("Could not determine GitHub username")
-        return 0, False, "gh credentials expired"
+    covered_repos = {
+        task_repo
+        for task in existing
+        if (task_repo := task.get("gh_repo"))
+        and _repo_owner(task_repo) in set(config.orgs)
+        and task_repo not in config.exclude_repos
+    }
+    covered_repos.update(
+        task_repo
+        for item in incoming_tasks
+        if (task_repo := item.get("gh_repo"))
+    )
+    return covered_repos
 
+
+def _normalize_authored_pr_task(pr: dict, gh_user: str) -> dict | None:
+    repo_full = _search_item_repo(pr)
+    author_login = (pr.get("author") or {}).get("login", "")
+    if author_login.lower() != gh_user.lower():
+        return None
+
+    reviews = pr.get("reviews", {}).get("nodes", [])
+    qualifying_reviews = [
+        review
+        for review in reviews
+        if (review.get("author") or {}).get("login", "").lower() != gh_user.lower()
+        and review.get("submittedAt")
+        and review.get("id")
+        and review.get("state") not in ("APPROVED", "CHANGES_REQUESTED", "PENDING")
+    ]
+    latest_comment_review = None
+    if qualifying_reviews:
+        latest_comment_review = max(
+            qualifying_reviews,
+            key=lambda review: review.get("submittedAt", ""),
+        )
+    last_commit_nodes = pr.get("commits", {}).get("nodes", [])
+    latest_commit_time = None
+    if last_commit_nodes:
+        latest_commit_time = (
+            last_commit_nodes[0].get("commit", {}).get("committedDate")
+        )
+    status = gh.derive_authored_pr_status(
+        is_draft=pr.get("isDraft", False),
+        review_decision=pr.get("reviewDecision"),
+        state=pr.get("state", "OPEN"),
+        has_review_requests=(pr.get("reviewRequests", {}).get("totalCount", 0) > 0),
+        latest_commit_time=latest_commit_time,
+        latest_comment_review_id=(latest_comment_review or {}).get("id"),
+        latest_comment_review_time=(latest_comment_review or {}).get("submittedAt"),
+        qualifying_reviews=qualifying_reviews,
+        author_login=author_login,
+        review_threads=pr.get("reviewThreads", {}).get("nodes", []),
+    )
+    labels = [l["name"] for l in (pr.get("labels", {}).get("nodes", []))]
+    return {
+        "title": pr["title"],
+        "source": "pr_authored",
+        "status": status,
+        "project": gh.extract_repo_short_name(repo_full),
+        "gh_repo": repo_full,
+        "gh_url": pr["url"],
+        "gh_number": pr["number"],
+        "tags": json.dumps(labels) if labels else None,
+    }
+
+
+def _normalize_review_pr_task(pr: dict, gh_user: str) -> dict:
+    reviews = pr.get("reviews", {}).get("nodes", [])
+    user_reviews = [
+        review
+        for review in reviews
+        if (review.get("author") or {}).get("login", "").lower() == gh_user.lower()
+    ]
+    user_has_reviewed = len(user_reviews) > 0
+
+    new_commits_since = False
+    re_requested_after_review = False
+    if user_has_reviewed:
+        last_review_time = max((review.get("submittedAt") or "" for review in user_reviews), default="")
+        last_commit_nodes = pr.get("commits", {}).get("nodes", [])
+        if last_commit_nodes:
+            last_commit_time = (last_commit_nodes[0].get("commit", {}).get("committedDate") or "")
+            new_commits_since = last_commit_time > last_review_time
+
+        request_events = pr.get("timelineItems", {}).get("nodes", [])
+        for event in request_events:
+            reviewer_login = ((event.get("requestedReviewer") or {}).get("login") or "")
+            if reviewer_login.lower() != gh_user.lower():
+                continue
+            created_at = event.get("createdAt") or ""
+            if created_at and created_at > last_review_time:
+                re_requested_after_review = True
+                break
+
+    status = gh.derive_review_pr_status(
+        user_has_reviewed=user_has_reviewed,
+        new_commits_since_review=new_commits_since,
+        re_requested_after_review=re_requested_after_review,
+    )
+
+    repo_full = _search_item_repo(pr)
+    author_info = pr.get("author") or {}
+    author_login = author_info.get("login", "")
+    author_name = gh.parse_author_first_name(author_info.get("name"))
+    return {
+        "title": pr.get("title", ""),
+        "source": "pr_review",
+        "status": status,
+        "project": gh.extract_repo_short_name(repo_full),
+        "gh_repo": repo_full,
+        "gh_url": pr.get("url", ""),
+        "gh_number": pr.get("number"),
+        "gh_author": author_login,
+        "gh_author_name": author_name or author_login,
+        "tags": json.dumps(["review"]),
+    }
+
+
+def _normalize_issue_task(issue: dict) -> dict:
+    repo_full = _search_item_repo(issue)
+    timeline = issue.get("timelineItems", {}).get("nodes", [])
+    has_linked_pr = any(
+        (node.get("subject") or node.get("source") or {}).get("url")
+        for node in timeline
+    )
+    status = gh.derive_issue_status(state=issue["state"], has_linked_pr=has_linked_pr)
+    labels = [l["name"] for l in (issue.get("labels", {}).get("nodes", []))]
+    return {
+        "title": issue["title"],
+        "source": "issue",
+        "status": status,
+        "project": gh.extract_repo_short_name(repo_full),
+        "gh_repo": repo_full,
+        "gh_url": issue["url"],
+        "gh_number": issue["number"],
+        "tags": json.dumps(labels) if labels else None,
+    }
+
+
+def _normalize_terminal_search_task(item: dict, *, source: str, status: str) -> dict:
+    repo_full = _search_item_repo(item)
+    labels = [l["name"] for l in (item.get("labels", {}).get("nodes", []))]
+    return {
+        "title": item.get("title", ""),
+        "source": source,
+        "status": status,
+        "project": gh.extract_repo_short_name(repo_full),
+        "gh_repo": repo_full,
+        "gh_url": item.get("url", ""),
+        "gh_number": item.get("number"),
+        "tags": json.dumps(labels) if labels else None,
+    }
+
+
+async def _collect_search_first_sync_inputs(
+    *,
+    config: AgendumConfig,
+    gh_user: str,
+    existing: list[dict],
+) -> CollectedSyncInputs:
+    incoming_tasks: list[dict] = []
+    search_owners = _search_scope_owners(config)
+
+    authored_open, authored_open_ok = await gh.search_authored_prs(search_owners, gh_user)
+    authored_merged, authored_merged_ok = await gh.search_merged_authored_prs(search_owners, gh_user)
+    authored_closed, authored_closed_ok = await gh.search_closed_authored_prs(search_owners, gh_user)
+    issue_open, issue_open_ok = await gh.search_assigned_issues(search_owners, gh_user)
+    issue_closed, issue_closed_ok = await gh.search_closed_issues(search_owners, gh_user)
+    review_open, review_search_ok = await gh.search_review_requested_prs(search_owners, gh_user)
+
+    authored_open = [item for item in authored_open if _repo_in_scope(_search_item_repo(item), config)]
+    authored_merged = [item for item in authored_merged if _repo_in_scope(_search_item_repo(item), config)]
+    authored_closed = [item for item in authored_closed if _repo_in_scope(_search_item_repo(item), config)]
+    issue_open = [item for item in issue_open if _repo_in_scope(_search_item_repo(item), config)]
+    issue_closed = [item for item in issue_closed if _repo_in_scope(_search_item_repo(item), config)]
+    review_open = [item for item in review_open if _repo_in_scope(_search_item_repo(item), config)]
+
+    authored_ids = [item["id"] for item in authored_open if item.get("id")]
+    issue_ids = [item["id"] for item in issue_open if item.get("id")]
+    review_ids = [item["id"] for item in review_open if item.get("id")]
+
+    hydrated_authored_prs: list[dict] = []
+    authored_hydrate_ok = True
+    if authored_ids:
+        hydrated_authored_prs, authored_hydrate_ok = await gh.hydrate_pull_requests(authored_ids)
+
+    hydrated_issues: list[dict] = []
+    issue_hydrate_ok = True
+    if issue_ids:
+        hydrated_issues, issue_hydrate_ok = await gh.hydrate_issues(issue_ids)
+
+    hydrated_review_prs: list[dict] = []
+    review_hydrate_ok = True
+    if review_ids:
+        hydrated_review_prs, review_hydrate_ok = await gh.hydrate_pull_requests(review_ids)
+
+    authored_by_id = {item["id"]: item for item in hydrated_authored_prs if item.get("id")}
+    issues_by_id = {item["id"]: item for item in hydrated_issues if item.get("id")}
+    review_by_id = {item["id"]: item for item in hydrated_review_prs if item.get("id")}
+
+    authored_ok = (
+        authored_open_ok
+        and authored_merged_ok
+        and authored_closed_ok
+        and authored_hydrate_ok
+        and len(authored_by_id) == len(authored_ids)
+    )
+    issues_ok = (
+        issue_open_ok
+        and issue_closed_ok
+        and issue_hydrate_ok
+        and len(issues_by_id) == len(issue_ids)
+    )
+    review_fetch_ok = (
+        review_search_ok
+        and review_hydrate_ok
+        and len(review_by_id) == len(review_ids)
+    )
+
+    for item in authored_open:
+        hydrated = authored_by_id.get(item.get("id"))
+        if not hydrated:
+            continue
+        task = _normalize_authored_pr_task(hydrated, gh_user)
+        if task:
+            incoming_tasks.append(task)
+
+    incoming_tasks.extend(
+        _normalize_terminal_search_task(item, source="pr_authored", status="merged")
+        for item in authored_merged
+    )
+    incoming_tasks.extend(
+        _normalize_terminal_search_task(item, source="pr_authored", status="closed")
+        for item in authored_closed
+    )
+
+    for item in issue_open:
+        hydrated = issues_by_id.get(item.get("id"))
+        if not hydrated:
+            continue
+        incoming_tasks.append(_normalize_issue_task(hydrated))
+
+    incoming_tasks.extend(
+        _normalize_terminal_search_task(item, source="issue", status="closed")
+        for item in issue_closed
+    )
+
+    for item in review_open:
+        hydrated = review_by_id.get(item.get("id"))
+        if not hydrated:
+            continue
+        incoming_tasks.append(_normalize_review_pr_task(hydrated, gh_user))
+
+    fetched_repos = set()
+    if authored_ok and issues_ok:
+        fetched_repos = _covered_repos_for_search_sync(existing, incoming_tasks, config)
+    else:
+        log.warning("Search-first authored/issue discovery was incomplete — skipping non-review cleanup")
+
+    if not review_fetch_ok:
+        log.warning("Review PR discovery had failures — skipping review task cleanup")
+
+    return CollectedSyncInputs(
+        incoming_tasks=incoming_tasks,
+        fetched_repos=fetched_repos,
+        review_fetch_ok=review_fetch_ok,
+    )
+
+
+async def _collect_repo_fanout_sync_inputs(
+    *,
+    config: AgendumConfig,
+    gh_user: str,
+) -> CollectedSyncInputs:
     if config.repos:
         repos = set(config.repos)
     else:
@@ -136,7 +425,7 @@ async def _run_sync_once(
 
     sem = asyncio.Semaphore(8)
     incoming_tasks: list[dict] = []
-    fetched_repos: set[str] = set()  # repos we got data from
+    fetched_repos: set[str] = set()
 
     async def fetch_one_repo(repo_full: str) -> None:
         async with sem:
@@ -151,53 +440,15 @@ async def _run_sync_once(
             short_name = gh.extract_repo_short_name(repo_full)
 
             for pr in repo_data.get("authoredPRs", {}).get("nodes", []):
-                author_login = (pr.get("author") or {}).get("login", "")
-                if author_login.lower() != gh_user.lower():
-                    continue
-                reviews = pr.get("reviews", {}).get("nodes", [])
-                qualifying_reviews = [
-                    review
-                    for review in reviews
-                    if (review.get("author") or {}).get("login", "").lower() != gh_user.lower()
-                    and review.get("submittedAt")
-                    and review.get("id")
-                    and review.get("state") not in ("APPROVED", "CHANGES_REQUESTED", "PENDING")
-                ]
-                latest_comment_review = None
-                if qualifying_reviews:
-                    latest_comment_review = max(
-                        qualifying_reviews,
-                        key=lambda review: review.get("submittedAt", ""),
-                    )
-                last_commit_nodes = pr.get("commits", {}).get("nodes", [])
-                latest_commit_time = None
-                if last_commit_nodes:
-                    latest_commit_time = (
-                        last_commit_nodes[0].get("commit", {}).get("committedDate")
-                    )
-                status = gh.derive_authored_pr_status(
-                    is_draft=pr.get("isDraft", False),
-                    review_decision=pr.get("reviewDecision"),
-                    state=pr.get("state", "OPEN"),
-                    has_review_requests=(pr.get("reviewRequests", {}).get("totalCount", 0) > 0),
-                    latest_commit_time=latest_commit_time,
-                    latest_comment_review_id=(latest_comment_review or {}).get("id"),
-                    latest_comment_review_time=(latest_comment_review or {}).get("submittedAt"),
-                    qualifying_reviews=qualifying_reviews,
-                    author_login=author_login,
-                    review_threads=pr.get("reviewThreads", {}).get("nodes", []),
+                task = _normalize_authored_pr_task(
+                    {
+                        **pr,
+                        "repository": {"nameWithOwner": repo_full},
+                    },
+                    gh_user,
                 )
-                labels = [l["name"] for l in (pr.get("labels", {}).get("nodes", []))]
-                incoming_tasks.append({
-                    "title": pr["title"],
-                    "source": "pr_authored",
-                    "status": status,
-                    "project": short_name,
-                    "gh_repo": repo_full,
-                    "gh_url": pr["url"],
-                    "gh_number": pr["number"],
-                    "tags": json.dumps(labels) if labels else None,
-                })
+                if task:
+                    incoming_tasks.append(task)
 
             for pr in repo_data.get("mergedPRs", {}).get("nodes", []):
                 author_login = (pr.get("author") or {}).get("login", "")
@@ -227,23 +478,14 @@ async def _run_sync_once(
                 })
 
             for issue in repo_data.get("openIssues", {}).get("nodes", []):
-                timeline = issue.get("timelineItems", {}).get("nodes", [])
-                has_linked_pr = any(
-                    (n.get("subject") or n.get("source") or {}).get("url")
-                    for n in timeline
+                incoming_tasks.append(
+                    _normalize_issue_task(
+                        {
+                            **issue,
+                            "repository": {"nameWithOwner": repo_full},
+                        }
+                    )
                 )
-                status = gh.derive_issue_status(state=issue["state"], has_linked_pr=has_linked_pr)
-                labels = [l["name"] for l in (issue.get("labels", {}).get("nodes", []))]
-                incoming_tasks.append({
-                    "title": issue["title"],
-                    "source": "issue",
-                    "status": status,
-                    "project": short_name,
-                    "gh_repo": repo_full,
-                    "gh_url": issue["url"],
-                    "gh_number": issue["number"],
-                    "tags": json.dumps(labels) if labels else None,
-                })
 
             for issue in repo_data.get("closedIssues", {}).get("nodes", []):
                 incoming_tasks.append({
@@ -260,92 +502,97 @@ async def _run_sync_once(
 
     review_prs, review_fetch_ok = await gh.discover_review_prs(config.orgs, gh_user)
     if config.repos and not config.orgs:
-        # Repo-only workspaces do not currently have repo-scoped review discovery,
-        # so review cleanup cannot be treated as complete.
         review_fetch_ok = False
     for pr_info in review_prs:
-        repo_info = pr_info.get("repository", {})
-        repo_full = repo_info.get("nameWithOwner", "")
-        if not repo_full or repo_full in config.exclude_repos:
-            continue
-        if config.repos and repo_full not in config.repos:
+        repo_full = (pr_info.get("repository") or {}).get("nameWithOwner", "")
+        if not _repo_in_scope(repo_full, config):
             continue
         owner, name = repo_full.split("/", 1)
         detail_data = await gh.fetch_review_detail(owner, name, pr_info["number"], gh_user)
         pr_detail = (detail_data.get("data", {}).get("repository", {}).get("pullRequest") or {})
         if not pr_detail:
+            review_fetch_ok = False
             continue
-
-        reviews = pr_detail.get("reviews", {}).get("nodes", [])
-        user_reviews = [r for r in reviews if (r.get("author") or {}).get("login", "").lower() == gh_user.lower()]
-        user_has_reviewed = len(user_reviews) > 0
-
-        new_commits_since = False
-        re_requested_after_review = False
-        if user_has_reviewed:
-            last_review_time = max((r.get("submittedAt") or "" for r in user_reviews), default="")
-            last_commit_nodes = pr_detail.get("commits", {}).get("nodes", [])
-            if last_commit_nodes:
-                last_commit_time = (last_commit_nodes[0].get("commit", {}).get("committedDate") or "")
-                new_commits_since = last_commit_time > last_review_time
-
-            request_events = pr_detail.get("timelineItems", {}).get("nodes", [])
-            for ev in request_events:
-                reviewer_login = ((ev.get("requestedReviewer") or {}).get("login") or "")
-                if reviewer_login.lower() != gh_user.lower():
-                    continue
-                created_at = ev.get("createdAt") or ""
-                if created_at and created_at > last_review_time:
-                    re_requested_after_review = True
-                    break
-
-        status = gh.derive_review_pr_status(
-            user_has_reviewed=user_has_reviewed,
-            new_commits_since_review=new_commits_since,
-            re_requested_after_review=re_requested_after_review,
+        incoming_tasks.append(
+            _normalize_review_pr_task(
+                {
+                    **pr_detail,
+                    "repository": {"nameWithOwner": repo_full},
+                },
+                gh_user,
+            )
         )
 
-        author_info = pr_detail.get("author") or {}
-        author_login = author_info.get("login", "")
-        author_name = gh.parse_author_first_name(author_info.get("name"))
-
-        incoming_tasks.append({
-            "title": pr_detail.get("title", pr_info.get("title", "")),
-            "source": "pr_review",
-            "status": status,
-            "project": gh.extract_repo_short_name(repo_full),
-            "gh_repo": repo_full,
-            "gh_url": pr_detail.get("url", pr_info.get("url", "")),
-            "gh_number": pr_detail.get("number", pr_info.get("number")),
-            "gh_author": author_login,
-            "gh_author_name": author_name or author_login,
-            "tags": json.dumps(["review"]),
-        })
-
-    # If review discovery failed, don't let the diff close review tasks
-    # from repos we didn't get review data for.
     if not review_fetch_ok:
         log.warning("Review PR discovery had failures — skipping review task cleanup")
 
-    existing = get_active_tasks(db_path)
-    diff = diff_tasks(
-        existing, incoming_tasks,
+    return CollectedSyncInputs(
+        incoming_tasks=incoming_tasks,
         fetched_repos=fetched_repos,
         review_fetch_ok=review_fetch_ok,
+    )
+
+
+async def run_sync(db_path: Path, config: AgendumConfig) -> tuple[int, bool, str | None]:
+    """
+    Execute a full sync cycle.
+    Returns (changes_count, has_attention_items, error_message).
+    """
+    if not config.orgs and not config.repos:
+        log.warning("No orgs or repos configured — skipping sync")
+        return 0, False, None
+
+    with gh.use_gh_config_dir(_workspace_gh_config_dir(db_path)):
+        return await _run_sync_once(db_path, config)
+
+
+def _workspace_gh_config_dir(db_path: Path) -> Path:
+    """Map a workspace DB path to its colocated gh auth/config directory."""
+    return db_path.parent / "gh"
+
+
+async def _run_sync_once(
+    db_path: Path,
+    config: AgendumConfig,
+) -> tuple[int, bool, str | None]:
+    """Execute a full sync cycle with the gh workspace already bound."""
+
+    gh_user = await gh.get_gh_username()
+    if not gh_user:
+        log.error("Could not determine GitHub username")
+        return 0, False, "gh credentials expired"
+
+    existing = get_active_tasks(db_path)
+    collected = await _collect_search_first_sync_inputs(
+        config=config,
+        gh_user=gh_user,
+        existing=existing,
+    )
+
+    diff = diff_tasks(
+        existing,
+        collected.incoming_tasks,
+        fetched_repos=collected.fetched_repos,
+        review_fetch_ok=collected.review_fetch_ok,
     )
 
     changes = 0
     attention = False
     now = datetime.now(timezone.utc).isoformat()
+    existing_by_create_url = find_tasks_by_gh_urls(
+        db_path,
+        [item["gh_url"] for item in diff.to_create if item.get("gh_url")],
+    )
 
     for item in diff.to_create:
+        existing_task = None
+        if item.get("gh_url"):
+            existing_task = existing_by_create_url.get(item["gh_url"])
         if item.get("status") in TERMINAL_STATUSES:
-            existing_task = find_task_by_gh_url(db_path, item["gh_url"])
             if existing_task:
                 update_task(db_path, existing_task["id"], status=item["status"])
                 changes += 1
             continue
-        existing_task = find_task_by_gh_url(db_path, item["gh_url"]) if item.get("gh_url") else None
         if existing_task:
             update_fields = {
                 k: item[k] for k in ("title", "source", "status", "project",
@@ -395,25 +642,29 @@ async def _run_sync_once(
         changes += 1
 
     notifications = await gh.fetch_notifications(gh_user)
+    notification_urls: list[str] = []
     for notif in notifications:
         reason = notif.get("reason", "")
-        if reason in ("mention", "comment", "review_requested"):
-            subject = notif.get("subject", {})
-            subject_url = subject.get("url", "")
-            if subject_url and "/pulls/" in subject_url:
-                web_url = subject_url.replace("api.github.com/repos", "github.com").replace("/pulls/", "/pull/")
-                task = find_task_by_gh_url(db_path, web_url)
-                if task and task.get("seen") == 1:
-                    update_task(db_path, task["id"], seen=0, last_changed_at=now)
-                    changes += 1
-                    attention = True
-            elif subject_url and "/issues/" in subject_url:
-                web_url = subject_url.replace("api.github.com/repos", "github.com")
-                task = find_task_by_gh_url(db_path, web_url)
-                if task and task.get("seen") == 1:
-                    update_task(db_path, task["id"], seen=0, last_changed_at=now)
-                    changes += 1
-                    attention = True
+        if reason not in ("mention", "comment", "review_requested"):
+            continue
+        subject = notif.get("subject", {})
+        subject_url = subject.get("url", "")
+        if subject_url and "/pulls/" in subject_url:
+            notification_urls.append(
+                subject_url.replace("api.github.com/repos", "github.com").replace("/pulls/", "/pull/")
+            )
+        elif subject_url and "/issues/" in subject_url:
+            notification_urls.append(
+                subject_url.replace("api.github.com/repos", "github.com")
+            )
+
+    notification_tasks_by_url = find_tasks_by_gh_urls(db_path, notification_urls)
+    for web_url, task in notification_tasks_by_url.items():
+        if task.get("seen") != 1:
+            continue
+        update_task(db_path, task["id"], seen=0, last_changed_at=now)
+        changes += 1
+        attention = True
 
     log.info("Sync complete: %d changes, attention=%s", changes, attention)
     return changes, attention, None

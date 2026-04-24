@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from agendum.db import add_task, get_active_tasks, init_db, mark_all_seen, update_task
+from agendum.db import (
+    add_task,
+    find_tasks_by_gh_urls,
+    get_active_tasks,
+    init_db,
+    mark_all_seen,
+    update_task,
+)
 
 
 def test_mark_all_seen(tmp_db: Path) -> None:
@@ -68,3 +75,30 @@ def test_get_active_tasks_ordering(tmp_db: Path) -> None:
     tasks = get_active_tasks(tmp_db)
     assert tasks[0]["title"] == "Unseen PR"
     assert tasks[1]["title"] == "Seen PR"
+
+
+def test_find_tasks_by_gh_urls_dedupes_duplicate_inputs(tmp_db: Path) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/pull/1"
+    add_task(tmp_db, title="PR 1", source="pr_authored", status="open", gh_url=url)
+
+    tasks = find_tasks_by_gh_urls(tmp_db, [url, url, url])
+
+    assert list(tasks) == [url]
+    assert tasks[url]["title"] == "PR 1"
+
+
+def test_find_tasks_by_gh_urls_includes_terminal_rows(tmp_db: Path) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/pull/9"
+    add_task(tmp_db, title="Merged PR", source="pr_authored", status="merged", gh_url=url)
+
+    tasks = find_tasks_by_gh_urls(tmp_db, [url])
+
+    assert tasks[url]["status"] == "merged"
+
+
+def test_find_tasks_by_gh_urls_empty_input_returns_empty_mapping(tmp_db: Path) -> None:
+    init_db(tmp_db)
+
+    assert find_tasks_by_gh_urls(tmp_db, []) == {}

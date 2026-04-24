@@ -22,6 +22,8 @@ _TASK_GH_CONFIG_DIR: ContextVar[Path | None | object] = ContextVar(
     "agendum_task_gh_config_dir",
     default=_GH_CONFIG_DIR_UNSET,
 )
+DEFAULT_SEARCH_PAGE_SIZE = 50
+DEFAULT_HYDRATE_BATCH_SIZE = 25
 
 
 # ---------------------------------------------------------------------------
@@ -474,40 +476,416 @@ query($owner: String!, $name: String!, $number: Int!) {
 }
 """
 
+SEARCH_PULL_REQUESTS_QUERY = """
+query($query: String!, $first: Int!, $after: String) {
+  search(type: ISSUE, query: $query, first: $first, after: $after) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on PullRequest {
+        id
+        number
+        title
+        url
+        state
+        isDraft
+        reviewDecision
+        repository { nameWithOwner }
+        labels(first: 10) { nodes { name } }
+        author {
+          login
+          ... on User {
+            name
+          }
+        }
+        reviewRequests(first: 10) { totalCount }
+      }
+    }
+  }
+}
+"""
+
+SEARCH_ISSUES_QUERY = """
+query($query: String!, $first: Int!, $after: String) {
+  search(type: ISSUE, query: $query, first: $first, after: $after) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      ... on Issue {
+        id
+        number
+        title
+        url
+        state
+        repository { nameWithOwner }
+        labels(first: 10) { nodes { name } }
+      }
+    }
+  }
+}
+"""
+
+PULL_REQUEST_NODE_FRAGMENT = """
+... on PullRequest {
+  id
+  number
+  title
+  url
+  state
+  isDraft
+  reviewDecision
+  repository { nameWithOwner }
+  labels(first: 10) { nodes { name } }
+  author {
+    login
+    ... on User {
+      name
+    }
+  }
+  reviewRequests(first: 10) { totalCount }
+  commits(last: 1) {
+    nodes {
+      commit {
+        committedDate
+      }
+    }
+  }
+  reviews(last: 50) {
+    nodes {
+      id
+      state
+      submittedAt
+      author { login }
+    }
+  }
+  reviewThreads(last: 50) {
+    nodes {
+      isResolved
+      isOutdated
+      comments(last: 20) {
+        nodes {
+          createdAt
+          pullRequestReview { id }
+          author { login }
+        }
+      }
+    }
+  }
+  timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+    nodes {
+      ... on ReviewRequestedEvent {
+        createdAt
+        requestedReviewer {
+          ... on User { login }
+        }
+      }
+    }
+  }
+}
+"""
+
+ISSUE_NODE_FRAGMENT = """
+... on Issue {
+  id
+  number
+  title
+  url
+  state
+  repository { nameWithOwner }
+  labels(first: 10) { nodes { name } }
+  timelineItems(last: 20, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT]) {
+    nodes {
+      ... on ConnectedEvent { subject { ... on PullRequest { url } } }
+      ... on CrossReferencedEvent { source { ... on PullRequest { url } } }
+    }
+  }
+}
+"""
+
+
+def _load_json_payload(payload: str, *, context: str) -> Any | None:
+    if not payload:
+        return None
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        log.warning("Failed to parse JSON payload for %s", context)
+        return None
+
+
+def _search_query_for_org(*, org: str, qualifiers: str) -> str:
+    return f"org:{org} {qualifiers}"
+
+
+async def _search_items_for_org(
+    *,
+    org: str,
+    qualifiers: str,
+    query: str,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    items: list[dict[str, Any]] = []
+    ok = True
+    after: str | None = None
+
+    while True:
+        args = [
+            "api", "graphql",
+            "-f", f"query={query}",
+            "-F", f"query={_search_query_for_org(org=org, qualifiers=qualifiers)}",
+            "-F", f"first={page_size}",
+        ]
+        if after:
+            args.extend(["-F", f"after={after}"])
+
+        payload = _load_json_payload(
+            await _run_gh(*args),
+            context=f"search items for {org}",
+        )
+        if payload is None:
+            ok = False
+            break
+
+        search = (payload.get("data") or {}).get("search") or {}
+        nodes = search.get("nodes") or []
+        items.extend(node for node in nodes if node)
+
+        page_info = search.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+
+        after = page_info.get("endCursor")
+        if not after:
+            ok = False
+            break
+
+    return items, ok
+
+
+async def _search_items_across_orgs(
+    orgs: list[str],
+    *,
+    qualifiers: str,
+    query: str,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    items: list[dict[str, Any]] = []
+    ok = True
+    seen_ids: set[str] = set()
+
+    for org in orgs:
+        org_items, org_ok = await _search_items_for_org(
+            org=org,
+            qualifiers=qualifiers,
+            query=query,
+            page_size=page_size,
+        )
+        ok = ok and org_ok
+        for item in org_items:
+            node_id = item.get("id")
+            if node_id and node_id in seen_ids:
+                continue
+            if node_id:
+                seen_ids.add(node_id)
+            items.append(item)
+
+    return items, ok
+
+
+def _build_node_batch_query(node_ids: list[str], *, fragment: str) -> str:
+    aliases: list[str] = []
+    for index, node_id in enumerate(node_ids):
+        aliases.append(
+            f"  n{index}: node(id: {json.dumps(node_id)}) {{\n{fragment}\n  }}"
+        )
+    return "query {\n" + "\n".join(aliases) + "\n}"
+
+
+async def _hydrate_node_batches(
+    node_ids: list[str],
+    *,
+    fragment: str,
+    batch_size: int,
+    context: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    items: list[dict[str, Any]] = []
+    ok = True
+
+    for start in range(0, len(node_ids), batch_size):
+        batch = node_ids[start:start + batch_size]
+        if not batch:
+            continue
+
+        payload = _load_json_payload(
+            await _run_gh(
+                "api", "graphql",
+                "-f", f"query={_build_node_batch_query(batch, fragment=fragment)}",
+            ),
+            context=context,
+        )
+        if payload is None:
+            ok = False
+            continue
+
+        data = payload.get("data") or {}
+        for index in range(len(batch)):
+            node = data.get(f"n{index}")
+            if node:
+                items.append(node)
+
+    return items, ok
+
 
 async def fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
     """Fetch all relevant data for a single repo via GraphQL."""
-    result = await _run_gh(
+    payload = _load_json_payload(
+        await _run_gh(
         "api", "graphql",
         "-f", f"query={REPO_QUERY}",
         "-F", f"owner={owner}",
         "-F", f"name={name}",
         "-F", f"user={gh_user}",
+        ),
+        context=f"repo data for {owner}/{name}",
     )
-    if not result:
-        return {}
-    try:
-        return json.loads(result)
-    except json.JSONDecodeError:
-        log.warning("Failed to parse GraphQL response for %s/%s", owner, name)
-        return {}
+    return payload or {}
 
 
 async def fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
     """Fetch review detail for a single PR to determine review status."""
-    result = await _run_gh(
+    payload = _load_json_payload(
+        await _run_gh(
         "api", "graphql",
         "-f", f"query={REVIEW_QUERY}",
         "-F", f"owner={owner}",
         "-F", f"name={name}",
         "-F", f"number={number}",
+        ),
+        context=f"review detail for {owner}/{name}#{number}",
     )
-    if not result:
-        return {}
-    try:
-        return json.loads(result)
-    except json.JSONDecodeError:
-        return {}
+    return payload or {}
+
+
+async def search_authored_prs(
+    orgs: list[str],
+    gh_user: str,
+    *,
+    page_size: int = DEFAULT_SEARCH_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Search open authored PRs across orgs via GraphQL search."""
+    return await _search_items_across_orgs(
+        orgs,
+        qualifiers=f"is:open is:pr author:{gh_user}",
+        query=SEARCH_PULL_REQUESTS_QUERY,
+        page_size=page_size,
+    )
+
+
+async def search_merged_authored_prs(
+    orgs: list[str],
+    gh_user: str,
+    *,
+    page_size: int = DEFAULT_SEARCH_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Search merged authored PRs across orgs via GraphQL search."""
+    return await _search_items_across_orgs(
+        orgs,
+        qualifiers=f"is:merged is:pr author:{gh_user}",
+        query=SEARCH_PULL_REQUESTS_QUERY,
+        page_size=page_size,
+    )
+
+
+async def search_closed_authored_prs(
+    orgs: list[str],
+    gh_user: str,
+    *,
+    page_size: int = DEFAULT_SEARCH_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Search closed, unmerged authored PRs across orgs via GraphQL search."""
+    return await _search_items_across_orgs(
+        orgs,
+        qualifiers=f"is:closed -is:merged is:pr author:{gh_user}",
+        query=SEARCH_PULL_REQUESTS_QUERY,
+        page_size=page_size,
+    )
+
+
+async def search_assigned_issues(
+    orgs: list[str],
+    gh_user: str,
+    *,
+    page_size: int = DEFAULT_SEARCH_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Search open assigned issues across orgs via GraphQL search."""
+    return await _search_items_across_orgs(
+        orgs,
+        qualifiers=f"is:open is:issue assignee:{gh_user}",
+        query=SEARCH_ISSUES_QUERY,
+        page_size=page_size,
+    )
+
+
+async def search_closed_issues(
+    orgs: list[str],
+    gh_user: str,
+    *,
+    page_size: int = DEFAULT_SEARCH_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Search closed assigned issues across orgs via GraphQL search."""
+    return await _search_items_across_orgs(
+        orgs,
+        qualifiers=f"is:closed is:issue assignee:{gh_user}",
+        query=SEARCH_ISSUES_QUERY,
+        page_size=page_size,
+    )
+
+
+async def search_review_requested_prs(
+    orgs: list[str],
+    gh_user: str,
+    *,
+    page_size: int = DEFAULT_SEARCH_PAGE_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Search open review-requested PRs across orgs via GraphQL search."""
+    return await _search_items_across_orgs(
+        orgs,
+        qualifiers=f"is:open is:pr review-requested:{gh_user}",
+        query=SEARCH_PULL_REQUESTS_QUERY,
+        page_size=page_size,
+    )
+
+
+async def hydrate_pull_requests(
+    node_ids: list[str],
+    *,
+    batch_size: int = DEFAULT_HYDRATE_BATCH_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Hydrate pull requests by GraphQL node id in bounded batches."""
+    return await _hydrate_node_batches(
+        node_ids,
+        fragment=PULL_REQUEST_NODE_FRAGMENT,
+        batch_size=batch_size,
+        context="pull request hydration",
+    )
+
+
+async def hydrate_issues(
+    node_ids: list[str],
+    *,
+    batch_size: int = DEFAULT_HYDRATE_BATCH_SIZE,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Hydrate issues by GraphQL node id in bounded batches."""
+    return await _hydrate_node_batches(
+        node_ids,
+        fragment=ISSUE_NODE_FRAGMENT,
+        batch_size=batch_size,
+        context="issue hydration",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -592,14 +970,12 @@ async def discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict]
 
 async def fetch_notifications(gh_user: str) -> list[dict]:
     """Fetch unread GitHub notifications."""
-    out = await _run_gh(
+    payload = _load_json_payload(
+        await _run_gh(
         "api", "notifications",
         "--method", "GET",
         "-f", "all=false",
+        ),
+        context="notifications",
     )
-    if not out:
-        return []
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        return []
+    return payload or []

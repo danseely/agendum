@@ -115,3 +115,22 @@ def test_find_task_by_gh_url(tmp_db: Path) -> None:
     assert task is not None
     assert task["title"] == "PR 1"
     assert find_task_by_gh_url(tmp_db, "https://nonexistent") is None
+
+
+def test_find_tasks_by_gh_urls_returns_matches_only(tmp_db: Path) -> None:
+    from agendum.db import find_tasks_by_gh_urls
+
+    init_db(tmp_db)
+    first_url = "https://github.com/org/repo/pull/1"
+    second_url = "https://github.com/org/repo/issues/2"
+    add_task(tmp_db, title="PR 1", source="pr_authored", status="open", gh_url=first_url)
+    add_task(tmp_db, title="Issue 2", source="issue", status="open", gh_url=second_url)
+
+    tasks = find_tasks_by_gh_urls(
+        tmp_db,
+        [first_url, "https://github.com/org/repo/pull/999", second_url],
+    )
+
+    assert set(tasks) == {first_url, second_url}
+    assert tasks[first_url]["title"] == "PR 1"
+    assert tasks[second_url]["title"] == "Issue 2"

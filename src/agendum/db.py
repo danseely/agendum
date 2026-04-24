@@ -140,6 +140,25 @@ def find_task_by_gh_url(db_path: Path, gh_url: str) -> dict | None:
     return dict(row) if row else None
 
 
+def find_tasks_by_gh_urls(db_path: Path, gh_urls: list[str]) -> dict[str, dict]:
+    if not gh_urls:
+        return {}
+
+    unique_urls = list(dict.fromkeys(gh_urls))
+    placeholders = ", ".join("?" for _ in unique_urls)
+    conn = _connect(db_path)
+    rows = conn.execute(
+        f"SELECT * FROM tasks WHERE gh_url IN ({placeholders})",
+        unique_urls,
+    ).fetchall()
+    conn.close()
+    return {
+        row["gh_url"]: dict(row)
+        for row in rows
+        if row["gh_url"] is not None
+    }
+
+
 def mark_all_seen(db_path: Path) -> None:
     now = datetime.now(timezone.utc).isoformat()
     conn = _connect(db_path)
