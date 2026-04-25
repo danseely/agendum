@@ -413,8 +413,8 @@ def use_gh_config_dir(gh_config_dir: Path | None) -> Iterator[None]:
 
 
 SEARCH_PULL_REQUESTS_QUERY = """
-query($query: String!, $first: Int!, $after: String) {
-  search(type: ISSUE, query: $query, first: $first, after: $after) {
+query($searchQuery: String!, $first: Int!, $after: String) {
+  search(type: ISSUE, query: $searchQuery, first: $first, after: $after) {
     pageInfo {
       hasNextPage
       endCursor
@@ -444,8 +444,8 @@ query($query: String!, $first: Int!, $after: String) {
 """
 
 SEARCH_ISSUES_QUERY = """
-query($query: String!, $first: Int!, $after: String) {
-  search(type: ISSUE, query: $query, first: $first, after: $after) {
+query($searchQuery: String!, $first: Int!, $after: String) {
+  search(type: ISSUE, query: $searchQuery, first: $first, after: $after) {
     pageInfo {
       hasNextPage
       endCursor
@@ -572,7 +572,7 @@ async def _search_items_for_org(
         args = [
             "api", "graphql",
             "-f", f"query={query}",
-            "-F", f"query={_search_query_for_org(org=org, qualifiers=qualifiers)}",
+            "-F", f"searchQuery={_search_query_for_org(org=org, qualifiers=qualifiers)}",
             "-F", f"first={page_size}",
         ]
         if after:

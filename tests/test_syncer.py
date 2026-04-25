@@ -238,7 +238,7 @@ def install_search_first_cli_fixture(
         if gh_args[:2] == ("api", "graphql"):
             query = _graphql_query_arg(gh_args)
             if "search(type: ISSUE" in query:
-                search_query = _graphql_form_arg(gh_args, "query")
+                search_query = _graphql_form_arg(gh_args, "searchQuery")
                 after = _graphql_form_arg(gh_args, "after")
                 payload = search_pages.get((search_query or "", after))
                 if payload is None:

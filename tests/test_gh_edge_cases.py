@@ -99,20 +99,20 @@ async def test_search_authored_prs_paginates_and_dedupes(monkeypatch) -> None:
 
     async def fake_run_gh(*args: str) -> str:
         calls.append(args)
-        query_value = _query_value(args, "query")
+        search_query_value = _query_value(args, "searchQuery")
         after_value = _query_value(args, "after")
 
-        if query_value == "query=org:org-a is:open is:pr author:user" and after_value is None:
+        if search_query_value == "searchQuery=org:org-a is:open is:pr author:user" and after_value is None:
             return _search_payload(
                 [{"id": "PR_1", "title": "one"}, {"id": "PR_2", "title": "two"}],
                 has_next_page=True,
                 end_cursor="cursor-a",
             )
-        if query_value == "query=org:org-a is:open is:pr author:user" and after_value == "after=cursor-a":
+        if search_query_value == "searchQuery=org:org-a is:open is:pr author:user" and after_value == "after=cursor-a":
             return _search_payload(
                 [{"id": "PR_2", "title": "dup"}, {"id": "PR_3", "title": "three"}]
             )
-        if query_value == "query=org:org-b is:open is:pr author:user":
+        if search_query_value == "searchQuery=org:org-b is:open is:pr author:user":
             return _search_payload(
                 [{"id": "PR_3", "title": "dup"}, {"id": "PR_4", "title": "four"}]
             )
@@ -128,14 +128,15 @@ async def test_search_authored_prs_paginates_and_dedupes(monkeypatch) -> None:
     assert [item["id"] for item in items] == ["PR_1", "PR_2", "PR_3", "PR_4"]
     query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
     assert "search(type: ISSUE" in query_arg
+    assert _query_value(calls[0], "searchQuery") == "searchQuery=org:org-a is:open is:pr author:user"
 
 
 async def test_search_assigned_issues_marks_invalid_page_incomplete(monkeypatch) -> None:
     async def fake_run_gh(*args: str) -> str:
-        query_value = _query_value(args, "query")
-        if query_value == "query=org:org-a is:open is:issue assignee:user":
+        search_query_value = _query_value(args, "searchQuery")
+        if search_query_value == "searchQuery=org:org-a is:open is:issue assignee:user":
             return _search_payload([{"id": "ISSUE_1", "title": "one"}])
-        if query_value == "query=org:org-b is:open is:issue assignee:user":
+        if search_query_value == "searchQuery=org:org-b is:open is:issue assignee:user":
             return "not json"
         raise AssertionError(f"Unexpected gh call: {args}")
 
