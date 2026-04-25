@@ -4,7 +4,15 @@ import json
 
 import pytest
 
-from agendum.gh import discover_repos, discover_review_prs, fetch_notifications, fetch_repo_data
+from agendum.gh import (
+    discover_repos,
+    discover_review_prs,
+    fetch_notifications,
+    fetch_repo_data,
+    search_open_assigned_issues,
+    search_open_authored_prs,
+    search_open_review_requested_prs,
+)
 
 
 async def test_discover_repos_aggregates_across_searches(monkeypatch) -> None:
@@ -101,3 +109,171 @@ async def test_fetch_repo_data_empty_response(monkeypatch) -> None:
     monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
 
     assert await fetch_repo_data("org", "repo", "user") == {}
+
+
+def _query_from_args(args: tuple[str, ...]) -> str:
+    index = args.index("-f") + 1
+    return args[index].split("q=", 1)[1]
+
+
+def _page_from_args(args: tuple[str, ...]) -> int:
+    index = args.index("-F")
+    while index < len(args):
+        value = args[index + 1]
+        if value.startswith("page="):
+            return int(value.split("=", 1)[1])
+        index = args.index("-F", index + 2) if "-F" in args[index + 2:] else len(args)
+    return 1
+
+
+async def test_search_open_authored_prs_dedupes_across_pages_and_orgs(monkeypatch) -> None:
+    responses = {
+        ("is:open is:pr author:user org:org-a", 1): {
+            "items": [
+                {
+                    "node_id": "PR_node_1",
+                    "number": 1,
+                    "title": "First authored PR",
+                    "html_url": "https://github.com/org-a/repo-a/pull/1",
+                    "repository_url": "https://api.github.com/repos/org-a/repo-a",
+                },
+                {
+                    "node_id": "PR_node_2",
+                    "number": 2,
+                    "title": "Second authored PR",
+                    "html_url": "https://github.com/org-a/repo-b/pull/2",
+                    "repository_url": "https://api.github.com/repos/org-a/repo-b",
+                },
+            ],
+        },
+        ("is:open is:pr author:user org:org-a", 2): {
+            "items": [
+                {
+                    "node_id": "PR_node_2",
+                    "number": 2,
+                    "title": "Second authored PR",
+                    "html_url": "https://github.com/org-a/repo-b/pull/2",
+                    "repository_url": "https://api.github.com/repos/org-a/repo-b",
+                },
+            ],
+        },
+        ("is:open is:pr author:user org:org-b", 1): {
+            "items": [
+                {
+                    "node_id": "PR_node_3",
+                    "number": 3,
+                    "title": "Third authored PR",
+                    "html_url": "https://github.com/org-b/repo-c/pull/3",
+                    "repository_url": "https://api.github.com/repos/org-b/repo-c",
+                },
+                {
+                    "node_id": "PR_node_1",
+                    "number": 1,
+                    "title": "First authored PR",
+                    "html_url": "https://github.com/org-a/repo-a/pull/1",
+                    "repository_url": "https://api.github.com/repos/org-a/repo-a",
+                },
+            ],
+        },
+    }
+
+    async def fake_run_gh(*args: str) -> str:
+        query = _query_from_args(args)
+        page = _page_from_args(args)
+        return json.dumps(responses.get((query, page), {"items": []}))
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_SEARCH_PAGE_SIZE", 2)
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    prs = await search_open_authored_prs(["org-a", "org-b"], "user")
+
+    assert [item["number"] for item in prs] == [1, 2, 3]
+    assert prs[0]["repository"]["nameWithOwner"] == "org-a/repo-a"
+    assert all(set(item) == {"gh_node_id", "number", "title", "url", "repository"} for item in prs)
+
+
+async def test_search_open_assigned_issues_returns_minimal_stable_shape(monkeypatch) -> None:
+    async def fake_run_gh(*args: str) -> str:
+        assert _query_from_args(args) == "is:open is:issue assignee:user org:org"
+        return json.dumps(
+            {
+                "items": [
+                    {
+                        "node_id": "I_node_1",
+                        "number": 11,
+                        "title": "Assigned issue",
+                        "html_url": "https://github.com/org/repo/issues/11",
+                        "repository_url": "https://api.github.com/repos/org/repo",
+                        "body": "ignored",
+                        "user": {"login": "someone"},
+                    }
+                ]
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    issues = await search_open_assigned_issues(["org"], "user")
+
+    assert issues == [
+        {
+            "gh_node_id": "I_node_1",
+            "number": 11,
+            "title": "Assigned issue",
+            "url": "https://github.com/org/repo/issues/11",
+            "repository": {"nameWithOwner": "org/repo"},
+        }
+    ]
+
+
+async def test_search_open_review_requested_prs_dedupes_overlap(monkeypatch) -> None:
+    async def fake_run_gh(*args: str) -> str:
+        query = _query_from_args(args)
+        if query == "is:open is:pr review-requested:reviewer org:org-a":
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "node_id": "PR_review_1",
+                            "number": 21,
+                            "title": "Review me",
+                            "html_url": "https://github.com/org-a/repo/pull/21",
+                            "repository_url": "https://api.github.com/repos/org-a/repo",
+                        }
+                    ]
+                }
+            )
+        if query == "is:open is:pr review-requested:reviewer org:org-b":
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "node_id": "PR_review_1",
+                            "number": 21,
+                            "title": "Review me",
+                            "html_url": "https://github.com/org-a/repo/pull/21",
+                            "repository_url": "https://api.github.com/repos/org-a/repo",
+                        },
+                        {
+                            "node_id": "PR_review_2",
+                            "number": 22,
+                            "title": "Also review me",
+                            "html_url": "https://github.com/org-b/repo/pull/22",
+                            "repository_url": "https://api.github.com/repos/org-b/repo",
+                        },
+                    ]
+                }
+            )
+        return json.dumps({"items": []})
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    prs = await search_open_review_requested_prs(["org-a", "org-b"], "reviewer")
+
+    assert [item["gh_node_id"] for item in prs] == ["PR_review_1", "PR_review_2"]

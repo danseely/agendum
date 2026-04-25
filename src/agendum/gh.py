@@ -22,6 +22,7 @@ _TASK_GH_CONFIG_DIR: ContextVar[Path | None | object] = ContextVar(
     "agendum_task_gh_config_dir",
     default=_GH_CONFIG_DIR_UNSET,
 )
+_SEARCH_PAGE_SIZE = 100
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +509,128 @@ async def fetch_review_detail(owner: str, name: str, number: int, gh_user: str) 
         return json.loads(result)
     except json.JSONDecodeError:
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Open-only discovery helpers
+# ---------------------------------------------------------------------------
+
+
+def _repository_name_from_api_url(repository_url: str | None) -> str:
+    if not repository_url or "/repos/" not in repository_url:
+        return ""
+    return repository_url.split("/repos/", 1)[1]
+
+
+def _normalize_open_search_item(item: dict[str, Any]) -> dict | None:
+    repo_name = _repository_name_from_api_url(item.get("repository_url"))
+    url = item.get("html_url") or ""
+    number = item.get("number")
+    if not repo_name or not url or number is None:
+        return None
+    return {
+        "gh_node_id": item.get("node_id"),
+        "number": number,
+        "title": item.get("title", ""),
+        "url": url,
+        "repository": {
+            "nameWithOwner": repo_name,
+        },
+    }
+
+
+async def _search_open_items(query: str) -> list[dict]:
+    items: list[dict] = []
+    seen: set[str] = set()
+    page = 1
+
+    while True:
+        out = await _run_gh(
+            "api",
+            "search/issues",
+            "--method",
+            "GET",
+            "-f",
+            f"q={query}",
+            "-F",
+            f"per_page={_SEARCH_PAGE_SIZE}",
+            "-F",
+            f"page={page}",
+        )
+        if not out:
+            break
+        try:
+            payload = json.loads(out)
+        except json.JSONDecodeError:
+            log.warning("Failed to parse search/issues response for query %s", query)
+            break
+
+        page_items = payload.get("items", [])
+        if not isinstance(page_items, list):
+            break
+
+        for item in page_items:
+            if not isinstance(item, dict):
+                continue
+            normalized = _normalize_open_search_item(item)
+            if normalized is None:
+                continue
+            identity = normalized.get("gh_node_id") or normalized["url"]
+            if identity in seen:
+                continue
+            seen.add(identity)
+            items.append(normalized)
+
+        if len(page_items) < _SEARCH_PAGE_SIZE:
+            break
+        page += 1
+
+    return items
+
+
+async def search_open_authored_prs(orgs: list[str], gh_user: str) -> list[dict]:
+    """Return lightweight skeletons for open authored PR discovery."""
+    results: list[dict] = []
+    seen: set[str] = set()
+    for org in orgs:
+        query = f"is:open is:pr author:{gh_user} org:{org}"
+        for item in await _search_open_items(query):
+            identity = item.get("gh_node_id") or item["url"]
+            if identity in seen:
+                continue
+            seen.add(identity)
+            results.append(item)
+    return results
+
+
+async def search_open_assigned_issues(orgs: list[str], gh_user: str) -> list[dict]:
+    """Return lightweight skeletons for open assigned issue discovery."""
+    results: list[dict] = []
+    seen: set[str] = set()
+    for org in orgs:
+        query = f"is:open is:issue assignee:{gh_user} org:{org}"
+        for item in await _search_open_items(query):
+            identity = item.get("gh_node_id") or item["url"]
+            if identity in seen:
+                continue
+            seen.add(identity)
+            results.append(item)
+    return results
+
+
+async def search_open_review_requested_prs(orgs: list[str], gh_user: str) -> list[dict]:
+    """Return lightweight skeletons for open review-requested PR discovery."""
+    results: list[dict] = []
+    seen: set[str] = set()
+    for org in orgs:
+        query = f"is:open is:pr review-requested:{gh_user} org:{org}"
+        for item in await _search_open_items(query):
+            identity = item.get("gh_node_id") or item["url"]
+            if identity in seen:
+                continue
+            seen.add(identity)
+            results.append(item)
+    return results
 
 
 # ---------------------------------------------------------------------------
