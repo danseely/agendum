@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Checkpoint phases 0-2 of issue `#51` in a real GitHub PR so the next session can resume with phase 3 minimal hydration helpers.
+Advance issue `#51` from the benchmarked phase-6 switch to PR review readiness with corrected benchmark attribution and up-to-date project memory.
 
 ## Branch
 
@@ -26,6 +26,39 @@ Checkpoint phases 0-2 of issue `#51` in a real GitHub PR so the next session can
 - Kept the new discovery results minimal: `gh_node_id`, `number`, `title`, `url`, and `repository.nameWithOwner`.
 - Added `gh` tests for pagination, overlap dedupe, and stable minimal discovery shape.
 - Ran the `phase 2` neutral benchmark with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr2.json`.
+- Added `hydrate_open_authored_prs()`, `hydrate_open_review_prs()`, and `hydrate_open_issues()` to `src/agendum/gh.py`.
+- Kept the hydration queries lane-specific and limited to current open-state derivation fields instead of introducing a shared oversized PR fragment.
+- Made hydration batch sizing explicit with a helper-level `batch_size` parameter and batching tests.
+- Updated `scripts/live_sync_bench.py` so hydration GraphQL calls classify as `hydrate_*` and GraphQL node batch sizes are recorded.
+- Ran the `phase 3` neutral benchmark with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr3.json`.
+- Added `verify_missing_authored_prs()`, `verify_missing_issues()`, and `verify_missing_review_prs()` to `src/agendum/gh.py`.
+- Batched node-id verification through lane-specific GraphQL queries and kept URL-derived fallback limited to legacy rows lacking `gh_node_id`.
+- Kept the verification queries minimal: authored returns terminal PR state, issues return state plus assignment membership, and review PRs return state plus review-request membership.
+- Updated `scripts/live_sync_bench.py` so verification GraphQL calls classify as `verify_missing_*`.
+- Ran the `phase 4` neutral benchmark with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr4.json`.
+- Added the phase-5 pure planner layer to `src/agendum/syncer.py`, including typed coverage, hydration, missing-verification, suppression, and normalized-task models.
+- Added `build_sync_plan()` plus pure normalization and suppression helpers without switching the production `run_sync` path yet.
+- Added fixture-backed parity tests in `tests/test_syncer.py` for authored-heavy, review-heavy, issue-heavy, mixed-org, repo-only, and partial-failure worlds.
+- Ran the `phase 5` neutral benchmark with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr5.json`.
+- Started phase 6 in `src/agendum/syncer.py` by adding explicit lane-wide and row-level close suppression support to `diff_tasks()`.
+- Added `syncer` edge-case tests covering lane-wide and row-level close suppression behavior.
+- Added completeness-aware `gh` wrappers for open discovery, hydration, and missing-item verification so the syncer can distinguish empty lanes from incomplete lanes.
+- Switched the org-backed `run_sync` path in `src/agendum/syncer.py` to the planner-backed open-only flow and routed notifications/diff application through shared helpers.
+- Updated sync reconciliation so active rows can pick up `gh_node_id` during creates and updates.
+- Added org-path tests covering excluded-repo filtering, review-task closure without the legacy `fetched_repos` guard, and `gh_node_id` backfill.
+- Added explicit-repo search helpers in `src/agendum/gh.py` using repo-qualified `search/issues` queries.
+- Switched explicit-repo configs in `src/agendum/syncer.py` onto the same planner-backed path as org workspaces.
+- Added `tests/syncer_test_helpers.py` and migrated the repo-config sync tests onto planner-path mocks instead of legacy repo GraphQL mocks.
+- Fixed legacy URL-only verified-item matching and metadata-only unseen churn in `src/agendum/syncer.py`.
+- Ran `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-phase6.json`.
+- Ran `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6.json`.
+- Confirmed the `+1` active-task delta is `https://github.com/adadaptedinc/mulligan/pull/1`, which current `main` does not surface.
+- Updated PR `#52` body to describe the current phase-6 state and added a benchmark comment with the before/after numbers plus the `mulligan#1` note.
+- Fixed `scripts/live_sync_bench.py` so the new phase-6 `gh api search/issues` calls classify as `search_open_*` lanes instead of `other`.
+- Added `tests/test_live_sync_bench.py` coverage for the `api search/issues` command shapes used by phase 6.
+- Reran `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6.json` and confirmed the same hot-path win with corrected lane attribution.
+- Updated PR `#52` title/body so the visible status now says the hot-path switch is complete and benchmarked.
+- Added a superseding PR `#52` benchmark comment with the corrected lane attribution and current comparison numbers.
 
 ## Validation
 
@@ -46,6 +79,28 @@ Checkpoint phases 0-2 of issue `#51` in a real GitHub PR so the next session can
 - `uv run python -m py_compile src/agendum/gh.py`
 - `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr2.json`
 - `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr2.json`
+- `uv run pytest tests/test_gh.py tests/test_gh_edge_cases.py tests/test_live_sync_bench.py`
+- `uv run python -m py_compile src/agendum/gh.py scripts/live_sync_bench.py`
+- `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr3.json`
+- `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr3.json`
+- `uv run pytest tests/test_gh.py tests/test_gh_edge_cases.py tests/test_live_sync_bench.py`
+- `uv run python -m py_compile src/agendum/gh.py scripts/live_sync_bench.py`
+- `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr4.json`
+- `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr4.json`
+- `uv run pytest tests/test_syncer.py tests/test_syncer_edge_cases.py`
+- `uv run python -m py_compile src/agendum/syncer.py tests/test_syncer.py`
+- `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr5.json`
+- `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr5.json`
+- `uv run pytest tests/test_syncer.py tests/test_syncer_edge_cases.py`
+- `uv run python -m py_compile src/agendum/syncer.py tests/test_syncer_edge_cases.py`
+- `uv run pytest tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py`
+- `uv run python -m py_compile src/agendum/gh.py src/agendum/syncer.py tests/test_syncer_edge_cases.py`
+- `uv run pytest tests/test_syncer.py tests/test_syncer_edge_cases.py`
+- `uv run python -m py_compile src/agendum/gh.py src/agendum/syncer.py tests/syncer_test_helpers.py tests/test_syncer.py tests/test_syncer_edge_cases.py`
+- `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-phase6.json`
+- `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6.json`
+- `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py`
+- `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6.json`
 
 ## Changed files
 
@@ -56,18 +111,25 @@ Checkpoint phases 0-2 of issue `#51` in a real GitHub PR so the next session can
 - `docs/live-sync-benchmark.md`
 - `src/agendum/db.py`
 - `src/agendum/gh.py`
+- `src/agendum/syncer.py`
 - `scripts/live_sync_bench.py`
 - `scripts/compare_live_sync_bench.py`
+- `tests/syncer_test_helpers.py`
 - `tests/test_db.py`
 - `tests/test_db_edge_cases.py`
+- `tests/test_gh.py`
 - `tests/test_gh_edge_cases.py`
 - `tests/test_live_sync_bench.py`
+- `tests/test_syncer.py`
+- `tests/test_syncer_edge_cases.py`
 
 ## Risks / blockers
 
 - The harness must measure real `gh` usage without mutating the user's live workspace.
 - The current code has no built-in sync metrics surface, so the harness needs to instrument `gh` calls directly.
 - The benchmark outputs are local temp data, not checked-in artifacts.
+- The phase-6 benchmark improves wall time and `gh` call count materially, but it also surfaces one extra active task versus `main`.
+- The only known semantic delta versus `main` is the extra active task `adadaptedinc/mulligan#1`, which looks like completeness improvement but should still be called out in review.
 
 ## Benchmark snapshot
 
@@ -80,14 +142,22 @@ Checkpoint phases 0-2 of issue `#51` in a real GitHub PR so the next session can
 - Call mix per phase: `1` user lookup, `1` open-authored search, `1` open-assigned-issues search, `2` review-requested searches, `4` repo GraphQL calls, `2` review-detail GraphQL calls, `1` notifications poll.
 - `phase 1` comparison versus baseline: same `gh` calls, same payload bytes, same task counts and changes; wall time moved within expected live-run noise (`-6.3%` cold, `+1.1%` warm).
 - `phase 2` comparison versus baseline: same `gh` calls, same payload bytes, same task counts and changes; wall time stayed within expected live-run noise (`-4.4%` cold, `+0.6%` warm).
+- `phase 3` comparison versus baseline: same `gh` calls, same payload bytes, same task counts and changes; wall time stayed within expected live-run noise (`-5.2%` cold, `+1.0%` warm).
+- `phase 4` comparison versus baseline: same `gh` calls, same payload bytes, same task counts and changes; wall time stayed within expected live-run noise (`-4.9%` cold, `-1.7%` warm).
+- `phase 5` comparison versus baseline: same `gh` calls, same payload bytes, same task counts and changes; wall time stayed within expected live-run noise (`-7.3%` cold, `-2.5%` warm).
+- Corrected `phase 6` comparison versus baseline: cold `6.42s` vs `18.46s` (`-65.2%`), warm `6.19s` vs `17.36s` (`-64.3%`), and `8` `gh` calls vs `12` (`-33.3%`) on both cold and warm runs.
+- `phase 6` payload bytes increased to `335908` (`+15.1%`) because the new open-search plus hydration shape trades fewer calls for somewhat larger batched responses.
+- `phase 6` surfaces `11` active tasks instead of `10`; the extra item is `adadaptedinc/mulligan#1` (`feat: initial logic of script`), which a fresh temp sync on `main` does not include.
+- The corrected call mix now shows `repo_graphql` and `review_detail_graphql` removed from the hot path, replaced by `search_open_*` plus `hydrate_open_*` lanes without any benchmark traffic falling into `other`.
 
 ## Next actions
 
-1. Carry the baseline plus phase 1 and phase 2 neutral-comparison numbers into the PR description/comment.
-2. Start issue `#51` phase 3 minimal hydration helpers.
-3. Keep `src/agendum/gh.py` ownership narrow when the later hot-path slices begin.
+1. Carry the `mulligan#1` note forward as the only observed semantic delta versus `main`.
+2. Move PR `#52` toward review from the current benchmarked branch state.
+3. Reuse the live benchmark harness for the next sync-affecting PR.
 
 ## Drift from original plan
 
-- No implementation drift from issue `#51`.
+- No implementation drift from the issue-51 plan remains in code.
 - Planning memory was missing from the repo and has now been added.
+- The repo memory had stale “checkpoint PR” language after PR `#52` was opened; `docs/plan.md`, `docs/status.md`, and `docs/handoff.md` now point at the active post-phase-4 state instead.

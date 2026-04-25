@@ -81,10 +81,19 @@ def parse_args() -> argparse.Namespace:
 
 def classify_gh_call(args: tuple[str, ...]) -> str:
     """Classify a gh CLI call into a stable benchmark category."""
+    query_arg = next((arg for arg in args if arg.startswith("q=")), "")
+    search_query = query_arg[2:] if query_arg else ""
     if len(args) >= 2 and args[0] == "api" and args[1] == "user":
         return "user_lookup"
     if len(args) >= 2 and args[0] == "api" and args[1] == "notifications":
         return "notifications"
+    if len(args) >= 2 and args[0] == "api" and args[1] == "search/issues":
+        if "is:pr" in search_query and "author:" in search_query:
+            return "search_open_authored_prs"
+        if "is:pr" in search_query and "review-requested:" in search_query:
+            return "search_open_review_requested_prs"
+        if "is:issue" in search_query and "assignee:" in search_query:
+            return "search_open_assigned_issues"
     if len(args) >= 2 and args[0] == "search" and args[1] == "prs":
         if "--author" in args and "--state" in args:
             return "search_open_authored_prs"
@@ -95,6 +104,18 @@ def classify_gh_call(args: tuple[str, ...]) -> str:
             return "search_open_assigned_issues"
     if len(args) >= 2 and args[0] == "api" and args[1] == "graphql":
         query = next((arg[6:] for arg in args if arg.startswith("query=")), "")
+        if "HydrateOpenAuthoredPRs" in query:
+            return "hydrate_open_authored_prs"
+        if "HydrateOpenReviewPRs" in query:
+            return "hydrate_open_review_prs"
+        if "HydrateOpenIssues" in query:
+            return "hydrate_open_issues"
+        if "VerifyMissingAuthoredPR" in query:
+            return "verify_missing_authored_prs"
+        if "VerifyMissingReviewPR" in query:
+            return "verify_missing_review_prs"
+        if "VerifyMissingIssue" in query or "VerifyMissingIssues" in query:
+            return "verify_missing_issues"
         if "pullRequest(number:" in query:
             return "review_detail_graphql"
         if "authoredPRs:" in query or "openIssues:" in query:
@@ -117,6 +138,11 @@ def extract_batch_sizes(category: str, payload: str) -> list[int]:
         nodes = decoded.get("nodes")
         if isinstance(nodes, list):
             return [len(nodes)]
+        data = decoded.get("data")
+        if isinstance(data, dict):
+            data_nodes = data.get("nodes")
+            if isinstance(data_nodes, list):
+                return [len(data_nodes)]
     return []
 
 

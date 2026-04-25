@@ -5,7 +5,23 @@ import pytest
 
 from agendum.config import AgendumConfig
 from agendum.db import add_task, find_task_by_gh_url, get_active_tasks, init_db
-from agendum.syncer import diff_tasks, run_sync
+from agendum.syncer import (
+    CloseSuppression,
+    MissingVerificationBundle,
+    MissingVerificationRequest,
+    NormalizedIncomingTask,
+    OpenDiscoveryCoverage,
+    OpenHydrationBundle,
+    VerifiedMissingItem,
+    build_sync_plan,
+    diff_tasks,
+    run_sync,
+)
+from tests.syncer_test_helpers import (
+    install_repo_planner_mocks,
+    make_open_authored_hydrated_pr,
+    make_open_review_hydrated_pr,
+)
 
 
 def make_review(
@@ -85,6 +101,289 @@ def authored_repo_payload(*, authored_prs: list[dict]) -> dict:
     }
 
 
+@pytest.fixture
+def authored_heavy_world() -> dict:
+    return {
+        "existing": [
+            {
+                "id": 1,
+                "source": "pr_authored",
+                "gh_repo": "org/repo-a",
+                "gh_url": "https://github.com/org/repo-a/pull/1",
+                "gh_node_id": "PR_1",
+                "gh_number": 1,
+                "title": "First PR",
+            },
+            {
+                "id": 2,
+                "source": "pr_authored",
+                "gh_repo": "org/repo-b",
+                "gh_url": "https://github.com/org/repo-b/pull/2",
+                "gh_node_id": "PR_2",
+                "gh_number": 2,
+                "title": "Second PR",
+            },
+        ],
+        "open_hydration": OpenHydrationBundle(
+            authored_prs=[
+                {
+                    "gh_node_id": "PR_1",
+                    "number": 1,
+                    "title": "First PR",
+                    "url": "https://github.com/org/repo-a/pull/1",
+                    "repository": {"nameWithOwner": "org/repo-a"},
+                    "state": "OPEN",
+                    "isDraft": False,
+                    "reviewDecision": "APPROVED",
+                    "author": {"login": "author"},
+                    "reviewRequests": {"totalCount": 0},
+                    "commits": {"nodes": []},
+                    "reviews": {"nodes": []},
+                    "reviewThreads": {"nodes": []},
+                },
+                {
+                    "gh_node_id": "PR_3",
+                    "number": 3,
+                    "title": "Third PR",
+                    "url": "https://github.com/org/repo-c/pull/3",
+                    "repository": {"nameWithOwner": "org/repo-c"},
+                    "state": "OPEN",
+                    "isDraft": True,
+                    "reviewDecision": None,
+                    "author": {"login": "author"},
+                    "reviewRequests": {"totalCount": 0},
+                    "commits": {"nodes": []},
+                    "reviews": {"nodes": []},
+                    "reviewThreads": {"nodes": []},
+                },
+            ]
+        ),
+        "verification": MissingVerificationBundle(
+            authored_prs=[
+                VerifiedMissingItem(
+                    gh_node_id="PR_2",
+                    gh_url="https://github.com/org/repo-b/pull/2",
+                    state="MERGED",
+                ),
+            ]
+        ),
+    }
+
+
+@pytest.fixture
+def review_heavy_world() -> dict:
+    return {
+        "existing": [
+            {
+                "id": 10,
+                "source": "pr_review",
+                "gh_repo": "org/repo-r",
+                "gh_url": "https://github.com/org/repo-r/pull/10",
+                "gh_node_id": "PR_R1",
+                "gh_number": 10,
+                "title": "Reviewed once",
+            },
+            {
+                "id": 11,
+                "source": "pr_review",
+                "gh_repo": "org/repo-r",
+                "gh_url": "https://github.com/org/repo-r/pull/11",
+                "gh_node_id": "PR_R2",
+                "gh_number": 11,
+                "title": "Missing review",
+            },
+        ],
+        "open_hydration": OpenHydrationBundle(
+            review_prs=[
+                {
+                    "gh_node_id": "PR_R1",
+                    "number": 10,
+                    "title": "Reviewed once",
+                    "url": "https://github.com/org/repo-r/pull/10",
+                    "repository": {"nameWithOwner": "org/repo-r"},
+                    "author": {"login": "author", "name": "Author Person"},
+                    "commits": {"nodes": [{"commit": {"committedDate": "2026-04-10T10:00:00Z"}}]},
+                    "reviews": {
+                        "nodes": [
+                            {
+                                "author": {"login": "reviewer"},
+                                "submittedAt": "2026-04-09T10:00:00Z",
+                                "state": "COMMENTED",
+                            }
+                        ]
+                    },
+                    "timelineItems": {"nodes": []},
+                }
+            ]
+        ),
+        "verification": MissingVerificationBundle(
+            review_prs=[
+                VerifiedMissingItem(
+                    gh_node_id="PR_R2",
+                    gh_url="https://github.com/org/repo-r/pull/11",
+                    state="OPEN",
+                    is_review_requested=False,
+                )
+            ]
+        ),
+    }
+
+
+@pytest.fixture
+def issue_heavy_world() -> dict:
+    return {
+        "existing": [
+            {
+                "id": 21,
+                "source": "issue",
+                "gh_repo": "org/repo-i",
+                "gh_url": "https://github.com/org/repo-i/issues/21",
+                "gh_node_id": "I_21",
+                "gh_number": 21,
+                "title": "Assigned task",
+            },
+            {
+                "id": 22,
+                "source": "issue",
+                "gh_repo": "org/repo-i",
+                "gh_url": "https://github.com/org/repo-i/issues/22",
+                "gh_node_id": "I_22",
+                "gh_number": 22,
+                "title": "Dropped assignment",
+            },
+        ],
+        "open_hydration": OpenHydrationBundle(
+            issues=[
+                {
+                    "gh_node_id": "I_21",
+                    "number": 21,
+                    "title": "Assigned task",
+                    "url": "https://github.com/org/repo-i/issues/21",
+                    "repository": {"nameWithOwner": "org/repo-i"},
+                    "state": "OPEN",
+                    "timelineItems": {"nodes": [{"subject": {"url": "https://github.com/org/repo-i/pull/5"}}]},
+                }
+            ]
+        ),
+        "verification": MissingVerificationBundle(
+            issues=[
+                VerifiedMissingItem(
+                    gh_node_id="I_22",
+                    gh_url="https://github.com/org/repo-i/issues/22",
+                    state="OPEN",
+                    is_assigned_to_user=False,
+                )
+            ]
+        ),
+    }
+
+
+@pytest.fixture
+def mixed_org_world() -> dict:
+    return {
+        "existing": [],
+        "open_hydration": OpenHydrationBundle(
+            authored_prs=[
+                {
+                    "gh_node_id": "PR_M1",
+                    "number": 31,
+                    "title": "Org A PR",
+                    "url": "https://github.com/org-a/repo-a/pull/31",
+                    "repository": {"nameWithOwner": "org-a/repo-a"},
+                    "state": "OPEN",
+                    "isDraft": False,
+                    "reviewDecision": None,
+                    "author": {"login": "author"},
+                    "reviewRequests": {"totalCount": 1},
+                    "commits": {"nodes": []},
+                    "reviews": {"nodes": []},
+                    "reviewThreads": {"nodes": []},
+                }
+            ],
+            issues=[
+                {
+                    "gh_node_id": "I_M2",
+                    "number": 32,
+                    "title": "Org B issue",
+                    "url": "https://github.com/org-b/repo-b/issues/32",
+                    "repository": {"nameWithOwner": "org-b/repo-b"},
+                    "state": "OPEN",
+                    "timelineItems": {"nodes": []},
+                }
+            ],
+            review_prs=[
+                {
+                    "gh_node_id": "PR_M3",
+                    "number": 33,
+                    "title": "Org C review",
+                    "url": "https://github.com/org-c/repo-c/pull/33",
+                    "repository": {"nameWithOwner": "org-c/repo-c"},
+                    "author": {"login": "peer", "name": "Peer Reviewer"},
+                    "commits": {"nodes": []},
+                    "reviews": {"nodes": []},
+                    "timelineItems": {"nodes": []},
+                }
+            ],
+        ),
+    }
+
+
+@pytest.fixture
+def repo_only_world() -> dict:
+    return {
+        "existing": [
+            {
+                "id": 40,
+                "source": "pr_review",
+                "gh_repo": "org/repo-only",
+                "gh_url": "https://github.com/org/repo-only/pull/40",
+                "gh_node_id": "PR_REPO_ONLY",
+                "gh_number": 40,
+                "title": "Needs review",
+            }
+        ],
+        "open_hydration": OpenHydrationBundle(),
+        "coverage": OpenDiscoveryCoverage(review_complete=False),
+    }
+
+
+@pytest.fixture
+def partial_failure_world() -> dict:
+    return {
+        "existing": [
+            {
+                "id": 51,
+                "source": "pr_authored",
+                "gh_repo": "org/repo-p",
+                "gh_url": "https://github.com/org/repo-p/pull/51",
+                "gh_node_id": "PR_P1",
+                "gh_number": 51,
+                "title": "Merged one",
+            },
+            {
+                "id": 52,
+                "source": "pr_authored",
+                "gh_repo": "org/repo-p",
+                "gh_url": "https://github.com/org/repo-p/pull/52",
+                "gh_node_id": "PR_P2",
+                "gh_number": 52,
+                "title": "Unverified one",
+            },
+        ],
+        "open_hydration": OpenHydrationBundle(),
+        "verification": MissingVerificationBundle(
+            authored_prs=[
+                VerifiedMissingItem(
+                    gh_node_id="PR_P1",
+                    gh_url="https://github.com/org/repo-p/pull/51",
+                    state="MERGED",
+                )
+            ],
+            authored_complete=False,
+        ),
+    }
+
+
 def test_diff_detects_new_task() -> None:
     existing: list[dict] = []
     incoming = [
@@ -95,6 +394,143 @@ def test_diff_detects_new_task() -> None:
     assert result.to_create[0]["title"] == "New PR"
     assert len(result.to_update) == 0
     assert len(result.to_close) == 0
+
+
+def test_build_sync_plan_authored_heavy_world(authored_heavy_world: dict) -> None:
+    plan = build_sync_plan(
+        authored_heavy_world["existing"],
+        authored_heavy_world["open_hydration"],
+        gh_user="author",
+        verification=authored_heavy_world["verification"],
+    )
+
+    assert [item.gh_url for item in plan.missing_verification_request.authored_prs] == [
+        "https://github.com/org/repo-b/pull/2"
+    ]
+    assert plan.close_suppression == CloseSuppression()
+    assert plan.normalized_incoming_tasks == [
+        NormalizedIncomingTask(
+            title="First PR",
+            source="pr_authored",
+            status="approved",
+            project="repo-a",
+            gh_repo="org/repo-a",
+            gh_url="https://github.com/org/repo-a/pull/1",
+            gh_node_id="PR_1",
+            gh_number=1,
+        ),
+        NormalizedIncomingTask(
+            title="Third PR",
+            source="pr_authored",
+            status="draft",
+            project="repo-c",
+            gh_repo="org/repo-c",
+            gh_url="https://github.com/org/repo-c/pull/3",
+            gh_node_id="PR_3",
+            gh_number=3,
+        ),
+        NormalizedIncomingTask(
+            title="",
+            source="pr_authored",
+            status="merged",
+            project="repo-b",
+            gh_repo="org/repo-b",
+            gh_url="https://github.com/org/repo-b/pull/2",
+            gh_node_id="PR_2",
+            gh_number=2,
+        ),
+    ]
+
+
+def test_build_sync_plan_review_heavy_world(review_heavy_world: dict) -> None:
+    plan = build_sync_plan(
+        review_heavy_world["existing"],
+        review_heavy_world["open_hydration"],
+        gh_user="reviewer",
+        verification=review_heavy_world["verification"],
+    )
+
+    assert [item.gh_url for item in plan.missing_verification_request.review_prs] == [
+        "https://github.com/org/repo-r/pull/11"
+    ]
+    assert plan.close_suppression == CloseSuppression()
+    assert [item.status for item in plan.normalized_incoming_tasks] == ["re-review requested", "done"]
+    assert plan.normalized_incoming_tasks[0].gh_author_name == "Author"
+
+
+def test_build_sync_plan_issue_heavy_world(issue_heavy_world: dict) -> None:
+    plan = build_sync_plan(
+        issue_heavy_world["existing"],
+        issue_heavy_world["open_hydration"],
+        gh_user="author",
+        verification=issue_heavy_world["verification"],
+    )
+
+    assert [item.gh_url for item in plan.missing_verification_request.issues] == [
+        "https://github.com/org/repo-i/issues/22"
+    ]
+    assert [item.status for item in plan.normalized_incoming_tasks] == ["in progress", "closed"]
+
+
+def test_build_sync_plan_mixed_org_world(mixed_org_world: dict) -> None:
+    plan = build_sync_plan(
+        mixed_org_world["existing"],
+        mixed_org_world["open_hydration"],
+        gh_user="reviewer",
+    )
+
+    assert plan.missing_verification_request == MissingVerificationRequest()
+    assert [item.project for item in plan.normalized_incoming_tasks] == [
+        "repo-a",
+        "repo-b",
+        "repo-c",
+    ]
+    assert [item.status for item in plan.normalized_incoming_tasks] == [
+        "awaiting review",
+        "open",
+        "review requested",
+    ]
+
+
+def test_build_sync_plan_repo_only_world(repo_only_world: dict) -> None:
+    plan = build_sync_plan(
+        repo_only_world["existing"],
+        repo_only_world["open_hydration"],
+        gh_user="reviewer",
+        coverage=repo_only_world["coverage"],
+    )
+
+    assert plan.missing_verification_request.review_prs == []
+    assert plan.close_suppression.review is True
+    assert plan.close_suppression.review_urls == frozenset()
+
+
+def test_build_sync_plan_partial_failure_world(partial_failure_world: dict) -> None:
+    plan = build_sync_plan(
+        partial_failure_world["existing"],
+        partial_failure_world["open_hydration"],
+        gh_user="author",
+        verification=partial_failure_world["verification"],
+    )
+
+    assert [item.gh_url for item in plan.missing_verification_request.authored_prs] == [
+        "https://github.com/org/repo-p/pull/51",
+        "https://github.com/org/repo-p/pull/52",
+    ]
+    assert plan.close_suppression.authored is False
+    assert plan.close_suppression.authored_urls == frozenset(
+        {"https://github.com/org/repo-p/pull/52"}
+    )
+    assert plan.normalized_incoming_tasks[-1] == NormalizedIncomingTask(
+        title="",
+        source="pr_authored",
+        status="merged",
+        project="repo-p",
+        gh_repo="org/repo-p",
+        gh_url="https://github.com/org/repo-p/pull/51",
+        gh_node_id="PR_P1",
+        gh_number=51,
+    )
 
 
 def test_diff_detects_status_change() -> None:
@@ -160,45 +596,18 @@ async def test_run_sync_marks_closed_authored_pr_closed(tmp_db: Path, monkeypatc
     init_db(tmp_db)
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Old PR", source="pr_authored", status="open", gh_url=url)
-
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "isArchived": False,
-                    "openIssues": {"nodes": []},
-                    "closedIssues": {"nodes": []},
-                    "authoredPRs": {"nodes": []},
-                    "mergedPRs": {"nodes": []},
-                    "closedPRs": {
-                        "nodes": [
-                            {
-                                "number": 12,
-                                "url": url,
-                                "state": "CLOSED",
-                                "author": {"login": gh_user},
-                            }
-                        ],
-                    },
-                },
-            },
-        }
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        verified_authored=[
+            {
+                "gh_node_id": "PR_node_12",
+                "gh_url": url,
+                "state": "CLOSED",
+            }
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -220,49 +629,20 @@ async def test_run_sync_revives_terminal_task(tmp_db: Path, monkeypatch) -> None
     url = "https://github.com/example-org/example-repo/pull/42"
     add_task(tmp_db, title="Old PR", source="pr_authored", status="closed", gh_url=url, gh_number=42)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "isArchived": False,
-                    "openIssues": {"nodes": []},
-                    "closedIssues": {"nodes": []},
-                    "authoredPRs": {
-                        "nodes": [
-                            {
-                                "number": 42,
-                                "url": url,
-                                "title": "Reopened PR",
-                                "state": "OPEN",
-                                "isDraft": False,
-                                "reviewDecision": None,
-                                "reviewRequests": {"totalCount": 0},
-                                "labels": {"nodes": []},
-                                "author": {"login": "author"},
-                            }
-                        ],
-                    },
-                    "mergedPRs": {"nodes": []},
-                    "closedPRs": {"nodes": []},
-                },
-            },
-        }
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                gh_node_id="PR_node_42",
+                number=42,
+                title="Reopened PR",
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -321,8 +701,8 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
 
         if args == ("api", "user", "--jq", ".login"):
             return "author\n"
-        if args[:2] == ("api", "graphql"):
-            return json.dumps(authored_repo_payload(authored_prs=[]))
+        if args[:2] == ("api", "search/issues"):
+            return json.dumps({"items": []})
         if args[:2] == ("api", "notifications"):
             return "[]"
         raise AssertionError(f"Unexpected gh call: {args}")
@@ -345,6 +725,8 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
         workspace_gh_dir,
         workspace_gh_dir,
         workspace_gh_dir,
+        workspace_gh_dir,
+        workspace_gh_dir,
     ]
 
 
@@ -352,61 +734,19 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
 async def test_run_sync_creates_review_requested_pr_with_author_name(tmp_db: Path, monkeypatch) -> None:
     init_db(tmp_db)
     url = "https://github.com/example-org/example-repo/pull/34"
-
-    async def fake_get_gh_username() -> str:
-        return "reviewer"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "isArchived": False,
-                    "openIssues": {"nodes": []},
-                    "closedIssues": {"nodes": []},
-                    "authoredPRs": {"nodes": []},
-                    "mergedPRs": {"nodes": []},
-                    "closedPRs": {"nodes": []},
-                },
-            },
-        }
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [
-            {
-                "number": 34,
-                "title": "Fix telemetry attributes",
-                "url": url,
-                "repository": {"nameWithOwner": "example-org/example-repo"},
-                "author": {"login": "author"},
-            }
-        ], True
-
-    async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "pullRequest": {
-                        "number": number,
-                        "title": "Fix telemetry attributes",
-                        "url": url,
-                        "author": {"login": "author", "name": "Author Person"},
-                        "commits": {"nodes": [{"commit": {"committedDate": "2026-04-07T20:00:00Z"}}]},
-                        "reviews": {"nodes": []},
-                    },
-                },
-            },
-        }
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="reviewer",
+        review_prs=[
+            make_open_review_hydrated_pr(
+                url=url,
+                gh_node_id="PR_review_34",
+                number=34,
+                title="Fix telemetry attributes",
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -446,77 +786,33 @@ async def test_run_sync_flips_reviewed_back_to_re_review_when_re_requested(tmp_d
         tags='["review"]',
     )
 
-    async def fake_get_gh_username() -> str:
-        return "reviewer"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "isArchived": False,
-                    "openIssues": {"nodes": []},
-                    "closedIssues": {"nodes": []},
-                    "authoredPRs": {"nodes": []},
-                    "mergedPRs": {"nodes": []},
-                    "closedPRs": {"nodes": []},
-                },
-            },
-        }
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [
-            {
-                "number": 77,
-                "title": "Fix something",
-                "url": url,
-                "repository": {"nameWithOwner": "example-org/example-repo"},
-                "author": {"login": "author"},
-            }
-        ], True
-
-    async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "pullRequest": {
-                        "number": number,
-                        "title": "Fix something",
-                        "url": url,
-                        "author": {"login": "author", "name": "Author Person"},
-                        # Commit is OLDER than the review (simulates rebase or no-push re-request)
-                        "commits": {"nodes": [{"commit": {"committedDate": "2026-04-05T09:00:00Z"}}]},
-                        "reviews": {
-                            "nodes": [
-                                {
-                                    "author": {"login": "reviewer"},
-                                    "submittedAt": "2026-04-06T10:00:00Z",
-                                    "state": "CHANGES_REQUESTED",
-                                },
-                            ]
-                        },
-                        "timelineItems": {
-                            "nodes": [
-                                {
-                                    "createdAt": "2026-04-07T11:00:00Z",
-                                    "requestedReviewer": {"login": "reviewer"},
-                                },
-                            ]
-                        },
-                    },
-                },
-            },
-        }
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="reviewer",
+        review_prs=[
+            make_open_review_hydrated_pr(
+                url=url,
+                gh_node_id="PR_review_77",
+                number=77,
+                title="Fix something",
+                last_commit_at="2026-04-05T09:00:00Z",
+                reviews=[
+                    {
+                        "author": {"login": "reviewer"},
+                        "submittedAt": "2026-04-06T10:00:00Z",
+                        "state": "CHANGES_REQUESTED",
+                    }
+                ],
+                timeline_items=[
+                    {
+                        "createdAt": "2026-04-07T11:00:00Z",
+                        "requestedReviewer": {"login": "reviewer"},
+                    }
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -554,76 +850,33 @@ async def test_run_sync_resurrects_done_review_task_when_re_requested(
         tags='["review"]',
     )
 
-    async def fake_get_gh_username() -> str:
-        return "reviewer"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "isArchived": False,
-                    "openIssues": {"nodes": []},
-                    "closedIssues": {"nodes": []},
-                    "authoredPRs": {"nodes": []},
-                    "mergedPRs": {"nodes": []},
-                    "closedPRs": {"nodes": []},
-                },
-            },
-        }
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [
-            {
-                "number": 88,
-                "title": "Fix something",
-                "url": url,
-                "repository": {"nameWithOwner": "example-org/example-repo"},
-                "author": {"login": "author"},
-            }
-        ], True
-
-    async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "pullRequest": {
-                        "number": number,
-                        "title": "Fix something",
-                        "url": url,
-                        "author": {"login": "author", "name": "Author Person"},
-                        "commits": {"nodes": [{"commit": {"committedDate": "2026-04-05T09:00:00Z"}}]},
-                        "reviews": {
-                            "nodes": [
-                                {
-                                    "author": {"login": "reviewer"},
-                                    "submittedAt": "2026-04-06T10:00:00Z",
-                                    "state": "COMMENTED",
-                                },
-                            ]
-                        },
-                        "timelineItems": {
-                            "nodes": [
-                                {
-                                    "createdAt": "2026-04-07T11:00:00Z",
-                                    "requestedReviewer": {"login": "reviewer"},
-                                },
-                            ]
-                        },
-                    },
-                },
-            },
-        }
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="reviewer",
+        review_prs=[
+            make_open_review_hydrated_pr(
+                url=url,
+                gh_node_id="PR_review_88",
+                number=88,
+                title="Fix something",
+                last_commit_at="2026-04-05T09:00:00Z",
+                reviews=[
+                    {
+                        "author": {"login": "reviewer"},
+                        "submittedAt": "2026-04-06T10:00:00Z",
+                        "state": "COMMENTED",
+                    }
+                ],
+                timeline_items=[
+                    {
+                        "createdAt": "2026-04-07T11:00:00Z",
+                        "requestedReviewer": {"login": "reviewer"},
+                    }
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -666,61 +919,22 @@ async def test_run_sync_resurrects_done_review_task_without_prior_review(
         tags='["review"]',
     )
 
-    async def fake_get_gh_username() -> str:
-        return "reviewer"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "isArchived": False,
-                    "openIssues": {"nodes": []},
-                    "closedIssues": {"nodes": []},
-                    "authoredPRs": {"nodes": []},
-                    "mergedPRs": {"nodes": []},
-                    "closedPRs": {"nodes": []},
-                },
-            },
-        }
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [
-            {
-                "number": 99,
-                "title": "Fresh ask",
-                "url": url,
-                "repository": {"nameWithOwner": "example-org/example-repo"},
-                "author": {"login": "author"},
-            }
-        ], True
-
-    async def fake_fetch_review_detail(owner: str, name: str, number: int, gh_user: str) -> dict:
-        return {
-            "data": {
-                "repository": {
-                    "pullRequest": {
-                        "number": number,
-                        "title": "Fresh ask",
-                        "url": url,
-                        "author": {"login": "author", "name": "Author Person"},
-                        "commits": {"nodes": [{"commit": {"committedDate": "2026-04-05T09:00:00Z"}}]},
-                        "reviews": {"nodes": []},  # user never reviewed
-                        "timelineItems": {"nodes": []},
-                    },
-                },
-            },
-        }
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_review_detail", fake_fetch_review_detail)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="reviewer",
+        review_prs=[
+            make_open_review_hydrated_pr(
+                url=url,
+                gh_node_id="PR_review_99",
+                number=99,
+                title="Fresh ask",
+                last_commit_at="2026-04-05T09:00:00Z",
+                reviews=[],
+                timeline_items=[],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -742,51 +956,36 @@ async def test_run_sync_sets_authored_pr_to_review_received_for_non_blocking_fee
     init_db(tmp_db)
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="open", gh_url=url)
-
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="COMMENTED",
-                        ),
-                    ],
-                    review_threads=[
-                        make_thread(
-                            is_resolved=False,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:01:00Z",
-                                    review_id="review-1",
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="COMMENTED",
+                    ),
+                ],
+                review_threads=[
+                    make_thread(
+                        is_resolved=False,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:01:00Z",
+                                review_id="review-1",
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -807,51 +1006,37 @@ async def test_run_sync_keeps_changes_requested_for_blocking_review(tmp_db: Path
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="open", gh_url=url)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    review_decision="CHANGES_REQUESTED",
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="CHANGES_REQUESTED",
-                        ),
-                    ],
-                    review_threads=[
-                        make_thread(
-                            is_resolved=False,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:01:00Z",
-                                    review_id="review-1",
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                review_decision="CHANGES_REQUESTED",
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="CHANGES_REQUESTED",
+                    ),
+                ],
+                review_threads=[
+                    make_thread(
+                        is_resolved=False,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:01:00Z",
+                                review_id="review-1",
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -871,51 +1056,37 @@ async def test_run_sync_clears_review_received_after_author_reply(tmp_db: Path, 
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="COMMENTED",
-                        ),
-                    ],
-                    review_threads=[
-                        make_thread(
-                            is_resolved=False,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:01:00Z",
-                                    review_id="review-1",
-                                ),
-                                make_thread_comment(author="author", created_at="2026-04-10T12:05:00Z"),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="COMMENTED",
+                    ),
+                ],
+                review_threads=[
+                    make_thread(
+                        is_resolved=False,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:01:00Z",
+                                review_id="review-1",
+                            ),
+                            make_thread_comment(author="author", created_at="2026-04-10T12:05:00Z"),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -935,61 +1106,47 @@ async def test_run_sync_keeps_review_received_with_sibling_thread_reply(tmp_db: 
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="COMMENTED",
-                        ),
-                    ],
-                    review_threads=[
-                        make_thread(
-                            is_resolved=False,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:01:00Z",
-                                    review_id="review-1",
-                                ),
-                                make_thread_comment(author="author", created_at="2026-04-10T12:05:00Z"),
-                            ],
-                        ),
-                        make_thread(
-                            is_resolved=False,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:02:00Z",
-                                    review_id="review-1",
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="COMMENTED",
+                    ),
+                ],
+                review_threads=[
+                    make_thread(
+                        is_resolved=False,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:01:00Z",
+                                review_id="review-1",
+                            ),
+                            make_thread_comment(author="author", created_at="2026-04-10T12:05:00Z"),
+                        ],
+                    ),
+                    make_thread(
+                        is_resolved=False,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:02:00Z",
+                                review_id="review-1",
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -1010,67 +1167,53 @@ async def test_run_sync_keeps_review_received_when_older_review_is_unresolved(tm
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T11:00:00Z",
-                            state="COMMENTED",
-                            review_id="review-old",
-                        ),
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="COMMENTED",
-                            review_id="review-new",
-                        ),
-                    ],
-                    review_threads=[
-                        make_thread(
-                            is_resolved=False,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T11:01:00Z",
-                                    review_id="review-old",
-                                ),
-                            ],
-                        ),
-                        make_thread(
-                            is_resolved=True,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:01:00Z",
-                                    review_id="review-new",
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T11:00:00Z",
+                        state="COMMENTED",
+                        review_id="review-old",
+                    ),
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="COMMENTED",
+                        review_id="review-new",
+                    ),
+                ],
+                review_threads=[
+                    make_thread(
+                        is_resolved=False,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T11:01:00Z",
+                                review_id="review-old",
+                            ),
+                        ],
+                    ),
+                    make_thread(
+                        is_resolved=True,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:01:00Z",
+                                review_id="review-new",
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -1091,50 +1234,36 @@ async def test_run_sync_clears_review_received_after_all_threads_resolved(tmp_db
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="COMMENTED",
-                        ),
-                    ],
-                    review_threads=[
-                        make_thread(
-                            is_resolved=True,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:01:00Z",
-                                    review_id="review-1",
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="COMMENTED",
+                    ),
+                ],
+                review_threads=[
+                    make_thread(
+                        is_resolved=True,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:01:00Z",
+                                review_id="review-1",
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -1154,51 +1283,37 @@ async def test_run_sync_keeps_review_received_after_push_when_feedback_threads_e
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    last_commit_at="2026-04-10T12:05:00Z",
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="COMMENTED",
-                        ),
-                    ],
-                    review_threads=[
-                        make_thread(
-                            is_resolved=False,
-                            comments=[
-                                make_thread_comment(
-                                    author="reviewer",
-                                    created_at="2026-04-10T12:01:00Z",
-                                    review_id="review-1",
-                                ),
-                            ],
-                        ),
-                    ],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                last_commit_at="2026-04-10T12:05:00Z",
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="COMMENTED",
+                    ),
+                ],
+                review_threads=[
+                    make_thread(
+                        is_resolved=False,
+                        comments=[
+                            make_thread_comment(
+                                author="reviewer",
+                                created_at="2026-04-10T12:01:00Z",
+                                review_id="review-1",
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,
@@ -1218,40 +1333,26 @@ async def test_run_sync_clears_review_received_after_push_without_feedback_threa
     url = "https://github.com/example-org/example-repo/pull/12"
     add_task(tmp_db, title="Improve sync status handling", source="pr_authored", status="review received", gh_url=url)
 
-    async def fake_get_gh_username() -> str:
-        return "author"
-
-    async def fake_fetch_repo_data(owner: str, name: str, gh_user: str) -> dict:
-        return authored_repo_payload(
-            authored_prs=[
-                make_authored_pr(
-                    gh_user=gh_user,
-                    url=url,
-                    last_commit_at="2026-04-10T12:05:00Z",
-                    reviews=[
-                        make_review(
-                            author="reviewer",
-                            submitted_at="2026-04-10T12:00:00Z",
-                            state="COMMENTED",
-                        ),
-                    ],
-                    review_threads=[],
-                ),
-            ],
-        )
-
-    async def fake_discover_review_prs(orgs: list[str], gh_user: str) -> tuple[list[dict], bool]:
-        return [], True
-
-    async def fake_fetch_notifications(gh_user: str) -> list[dict]:
-        return []
-
-    from agendum import gh
-
-    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
-    monkeypatch.setattr(gh, "fetch_repo_data", fake_fetch_repo_data)
-    monkeypatch.setattr(gh, "discover_review_prs", fake_discover_review_prs)
-    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                last_commit_at="2026-04-10T12:05:00Z",
+                reviews=[
+                    make_review(
+                        author="reviewer",
+                        submitted_at="2026-04-10T12:00:00Z",
+                        state="COMMENTED",
+                    ),
+                ],
+                review_threads=[],
+            )
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
 
     changes, attention, error = await run_sync(
         tmp_db,

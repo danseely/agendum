@@ -28,6 +28,48 @@ def test_classify_gh_call_recognizes_expected_hot_path_commands() -> None:
     assert live_sync_bench.classify_gh_call(("api", "user", "--jq", ".login")) == "user_lookup"
     assert live_sync_bench.classify_gh_call(
         (
+            "api",
+            "search/issues",
+            "--method",
+            "GET",
+            "-f",
+            "q=is:open is:pr author:dan org:example-org",
+            "-F",
+            "per_page=100",
+            "-F",
+            "page=1",
+        )
+    ) == "search_open_authored_prs"
+    assert live_sync_bench.classify_gh_call(
+        (
+            "api",
+            "search/issues",
+            "--method",
+            "GET",
+            "-f",
+            "q=is:open is:issue assignee:dan repo:example-org/example-repo",
+            "-F",
+            "per_page=100",
+            "-F",
+            "page=1",
+        )
+    ) == "search_open_assigned_issues"
+    assert live_sync_bench.classify_gh_call(
+        (
+            "api",
+            "search/issues",
+            "--method",
+            "GET",
+            "-f",
+            "q=is:open is:pr review-requested:dan org:example-org",
+            "-F",
+            "per_page=100",
+            "-F",
+            "page=1",
+        )
+    ) == "search_open_review_requested_prs"
+    assert live_sync_bench.classify_gh_call(
+        (
             "search",
             "prs",
             "--author",
@@ -71,6 +113,36 @@ def test_classify_gh_call_distinguishes_repo_and_review_graphql_queries() -> Non
     assert live_sync_bench.classify_gh_call(
         ("api", "graphql", "-f", "query=query { repository(owner: $owner, name: $name) { pullRequest(number: $number) { number } } }")
     ) == "review_detail_graphql"
+
+
+def test_classify_gh_call_recognizes_hydration_queries() -> None:
+    assert live_sync_bench.classify_gh_call(
+        ("api", "graphql", "-f", "query=query HydrateOpenAuthoredPRs { nodes(ids: [\"PR_1\"]) { __typename } }")
+    ) == "hydrate_open_authored_prs"
+    assert live_sync_bench.classify_gh_call(
+        ("api", "graphql", "-f", "query=query HydrateOpenReviewPRs { nodes(ids: [\"PR_1\"]) { __typename } }")
+    ) == "hydrate_open_review_prs"
+    assert live_sync_bench.classify_gh_call(
+        ("api", "graphql", "-f", "query=query HydrateOpenIssues { nodes(ids: [\"I_1\"]) { __typename } }")
+    ) == "hydrate_open_issues"
+
+
+def test_classify_gh_call_recognizes_verification_queries() -> None:
+    assert live_sync_bench.classify_gh_call(
+        ("api", "graphql", "-f", "query=query VerifyMissingAuthoredPRs { nodes(ids: [\"PR_1\"]) { __typename } }")
+    ) == "verify_missing_authored_prs"
+    assert live_sync_bench.classify_gh_call(
+        ("api", "graphql", "-f", "query=query VerifyMissingReviewPRByUrl { repository(owner: \"org\", name: \"repo\") { pullRequest(number: 1) { id } } }")
+    ) == "verify_missing_review_prs"
+    assert live_sync_bench.classify_gh_call(
+        ("api", "graphql", "-f", "query=query VerifyMissingIssueByUrl { repository(owner: \"org\", name: \"repo\") { issue(number: 1) { id } } }")
+    ) == "verify_missing_issues"
+
+
+def test_extract_batch_sizes_reads_graphql_nodes_payload() -> None:
+    payload = '{"data":{"nodes":[{"id":"PR_1"},{"id":"PR_2"},{"id":"PR_3"}]}}'
+
+    assert live_sync_bench.extract_batch_sizes("hydrate_open_authored_prs", payload) == [3]
 
 
 def test_summarize_phase_averages_numeric_fields() -> None:

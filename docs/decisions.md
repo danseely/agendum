@@ -41,3 +41,24 @@
 - Reason: The shorthand was being read as already-open GitHub pull requests, but these are planned implementation phases and only one real checkpoint PR is being opened now.
 - Impact: Planning files and handoffs should now distinguish between issue phases and actual GitHub PRs more clearly.
 - Plan change: no
+
+## 2026-04-25
+
+- Decision: Land the phase-6 planner switch on the org-backed sync path first, while keeping explicit-repo configs on the legacy path temporarily.
+- Reason: The live benchmark target is an org-backed workspace, and this keeps the hot-path cutover moving without destabilizing the heavily covered explicit-repo behavior in the same checkpoint.
+- Impact: `src/agendum/syncer.py` now exercises open-only discovery plus targeted verification for org workspaces, but phase 6 is not complete until explicit-repo configs are moved off repo fanout and the live benchmark is rerun.
+- Plan change: yes
+
+## 2026-04-25
+
+- Decision: Finish phase 6 for explicit-repo configs with repo-qualified `search/issues` discovery instead of keeping a permanent repo-only legacy branch.
+- Reason: Explicit-repo workspaces still need the same open-only discovery and targeted missing-item verification model as org workspaces, and leaving repo fanout in place would contradict the issue-51 hot-path rules.
+- Impact: `src/agendum/gh.py` now supports repo-scoped open discovery, and `src/agendum/syncer.py` no longer branches repo configs back to the legacy repo-fanout path.
+- Plan change: no
+
+## 2026-04-25
+
+- Decision: Teach the live benchmark harness to classify phase-6 `gh api search/issues` discovery calls by lane before finalizing the PR benchmark summary.
+- Reason: The initial phase-6 benchmark already showed the hot-path win, but lane attribution was misleading because the new open-search calls were falling through to `other`.
+- Impact: `scripts/live_sync_bench.py` now reports authored, assigned, and review-requested open-discovery traffic under stable lane names, and the PR benchmark summary can describe the before/after mix accurately.
+- Plan change: no

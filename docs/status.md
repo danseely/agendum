@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Issue `#51` / next up: phase 3 minimal hydration helpers.
+Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected lane attribution, and being cleaned up for review.
 
 ## Done
 
@@ -23,10 +23,40 @@ Issue `#51` / next up: phase 3 minimal hydration helpers.
 - Added page-aware open discovery helpers in `src/agendum/gh.py` for authored PRs, assigned issues, and review-requested PRs.
 - Added `gh` tests covering minimal skeleton shape, page overlap, and cross-org dedupe.
 - Ran the `phase 2` neutral benchmark and captured `/tmp/agendum-live-sync-bench-pr2.json`.
+- Added lane-specific minimal hydration helpers in `src/agendum/gh.py` for authored PRs, review PRs, and issues.
+- Kept the hydration queries lane-specific and limited to fields needed for current open-state derivation.
+- Added `gh` tests covering hydration query shape, explicit batch sizing, order preservation, and wrong-type node filtering.
+- Updated `scripts/live_sync_bench.py` so future live runs classify hydration GraphQL calls and extract GraphQL batch sizes.
+- Ran the `phase 3` neutral benchmark and captured `/tmp/agendum-live-sync-bench-pr3.json`.
+- Added targeted verification helpers in `src/agendum/gh.py` for missing authored PRs, issues, and review PRs.
+- Batched node-id verification and kept URL-derived fallback limited to legacy rows lacking `gh_node_id`.
+- Added `gh` tests covering verification query shape, explicit batching, and legacy URL fallback.
+- Updated `scripts/live_sync_bench.py` so future live runs classify `verify_missing_*` GraphQL calls.
+- Ran the `phase 4` neutral benchmark and captured `/tmp/agendum-live-sync-bench-pr4.json`.
+- Added the pure planner and normalized-model layer in `src/agendum/syncer.py`.
+- Defined explicit phase-5 types for open discovery coverage, open hydration bundles, missing verification requests, missing verification bundles, close suppression, and normalized incoming tasks.
+- Added fixture-backed parity tests in `tests/test_syncer.py` for authored-heavy, review-heavy, issue-heavy, mixed-org, repo-only, and partial-failure planner worlds.
+- Ran the `phase 5` neutral benchmark and captured `/tmp/agendum-live-sync-bench-pr5.json`.
+- Added completeness-aware wrappers in `src/agendum/gh.py` for open discovery, open hydration, and missing-item verification.
+- Switched the org-backed `run_sync` path in `src/agendum/syncer.py` to the planner-backed open-only pipeline.
+- Started persisting `gh_node_id` updates during sync reconciliation instead of leaving active rows URL-only.
+- Added org-path sync tests covering excluded repos, review-task closure without `fetched_repos`, and `gh_node_id` backfill.
+- Added explicit-repo open-discovery helpers in `src/agendum/gh.py` so repo-config workspaces can use repo-qualified search instead of repo fanout.
+- Switched explicit-repo configs in `src/agendum/syncer.py` to the planner-backed path and stopped branching back to the legacy repo-fanout flow.
+- Added shared repo-path planner test helpers in `tests/syncer_test_helpers.py` and migrated the repo-config sync tests onto the new seam.
+- Fixed verified-missing matching for legacy URL-only rows by indexing verification results by both `gh_node_id` and `gh_url`.
+- Stopped metadata-only sync updates from marking tasks unseen.
+- Ran the live phase-6 benchmark against `adadaptedinc` and captured `/tmp/agendum-live-sync-bench-pr52-phase6.json`.
+- Posted the phase-6 benchmark comparison to PR `#52`.
+- Fixed `scripts/live_sync_bench.py` classification for phase-6 `gh api search/issues` calls so authored, assigned, and review-requested open-discovery traffic is attributed to real lanes instead of `other`.
+- Added benchmark-classification coverage in `tests/test_live_sync_bench.py` for the `api search/issues` query shapes used by phase 6.
+- Reran the local phase-6 comparison after the classifier fix and confirmed the same hot-path win with corrected lane totals.
+- Updated PR `#52` title/body so it describes the production switch instead of groundwork and includes the corrected benchmark summary.
+- Added a superseding PR `#52` benchmark comment with the corrected lane attribution and current numbers.
 
 ## In progress
 
-- Checkpointing phases 0-2 in a real GitHub PR so work can safely resume in a later session.
+- No code work is in progress; the branch is at review-packaging status.
 
 ## Blocked
 
@@ -34,6 +64,5 @@ Issue `#51` / next up: phase 3 minimal hydration helpers.
 
 ## Next
 
-- Preserve or restage the local baseline numbers in the next sync-affecting PR description/comment.
-- Use `scripts/compare_live_sync_bench.py` in the next sync-affecting PR.
-- Start `phase 3` minimal hydration helpers when ready.
+- Keep calling out `adadaptedinc/mulligan#1` as the only observed semantic delta versus `main`.
+- Move PR `#52` toward review from the current benchmarked branch state.
