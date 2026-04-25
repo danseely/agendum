@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+import re
 
 import pytest
 
@@ -175,6 +176,101 @@ def install_repo_only_search_first_mocks(
     monkeypatch.setattr(gh, "hydrate_pull_requests", fake_hydrate_pull_requests)
     monkeypatch.setattr(gh, "hydrate_issues", fake_hydrate_issues)
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+
+def make_search_payload(
+    nodes: list[dict],
+    *,
+    has_next_page: bool = False,
+    end_cursor: str | None = None,
+) -> dict:
+    return {
+        "data": {
+            "search": {
+                "nodes": nodes,
+                "pageInfo": {
+                    "hasNextPage": has_next_page,
+                    "endCursor": end_cursor,
+                },
+            },
+        },
+    }
+
+
+def _graphql_query_arg(args: tuple[str, ...]) -> str:
+    return next(arg.split("=", 1)[1] for arg in args if arg.startswith("query="))
+
+
+def _graphql_form_arg(args: tuple[str, ...], name: str) -> str | None:
+    for index, arg in enumerate(args):
+        if arg == "-F" and index + 1 < len(args) and args[index + 1].startswith(f"{name}="):
+            return args[index + 1].split("=", 1)[1]
+    return None
+
+
+def install_search_first_cli_fixture(
+    monkeypatch,
+    *,
+    gh_user: str,
+    search_pages: dict[tuple[str, str | None], dict],
+    hydrated_nodes: dict[str, dict],
+    notifications: list[dict] | None = None,
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, stdout: bytes):
+            self.stdout = stdout
+
+        async def communicate(self):
+            return self.stdout, b""
+
+    async def fake_create_subprocess_exec(*args: str, **kwargs):
+        del kwargs
+        gh_args = args[1:]
+
+        if gh_args == ("api", "user", "--jq", ".login"):
+            return FakeProcess(f"{gh_user}\n".encode())
+
+        if gh_args[:2] == ("api", "notifications"):
+            return FakeProcess(json.dumps(notifications or []).encode())
+
+        if gh_args[:2] == ("api", "graphql"):
+            query = _graphql_query_arg(gh_args)
+            if "search(type: ISSUE" in query:
+                search_query = _graphql_form_arg(gh_args, "query")
+                after = _graphql_form_arg(gh_args, "after")
+                payload = search_pages.get((search_query or "", after))
+                if payload is None:
+                    raise AssertionError(f"Unexpected search query: {search_query!r} after={after!r}")
+                return FakeProcess(json.dumps(payload).encode())
+
+            node_ids = re.findall(r'node\(id:\s*"([^"]+)"\)', query)
+            if node_ids:
+                payload = {
+                    "data": {
+                        f"n{index}": hydrated_nodes.get(node_id)
+                        for index, node_id in enumerate(node_ids)
+                    },
+                }
+                return FakeProcess(json.dumps(payload).encode())
+
+        raise AssertionError(f"Unexpected gh call: {gh_args}")
+
+    monkeypatch.setattr("agendum.gh.asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+
+def parse_github_api_usage(caplog) -> dict[str, int]:
+    pattern = re.compile(
+        r"GitHub API usage: total=(?P<total>\d+) graphql=(?P<graphql>\d+) "
+        r"search=(?P<search>\d+) hydrate=(?P<hydrate>\d+) notifications=(?P<notifications>\d+) "
+        r"rest=(?P<rest>\d+) bytes=(?P<bytes>\d+)"
+    )
+    for record in reversed(caplog.records):
+        match = pattern.search(record.message)
+        if match:
+            return {key: int(value) for key, value in match.groupdict().items()}
+    raise AssertionError("GitHub API usage log line not found")
 
 
 def test_diff_detects_new_task() -> None:
@@ -557,6 +653,196 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
         in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_run_sync_mixed_workspace_captures_api_budget_and_expected_tasks(
+    tmp_db: Path,
+    monkeypatch,
+    caplog,
+) -> None:
+    init_db(tmp_db)
+    caplog.set_level(logging.INFO)
+
+    authored_one_url = "https://github.com/example-org/authored-repo/pull/1"
+    authored_two_url = "https://github.com/example-org/authored-repo/pull/2"
+    authored_three_url = "https://github.com/example-org/authored-repo/pull/3"
+    issue_url = "https://github.com/example-org/issue-repo/issues/11"
+    review_url = "https://github.com/example-org/review-repo/pull/7"
+
+    install_search_first_cli_fixture(
+        monkeypatch,
+        gh_user="dan",
+        search_pages={
+            ("org:example-org is:open is:pr author:dan", None): make_search_payload(
+                [
+                    {"id": "PR_AUTH_1", "repository": {"nameWithOwner": "example-org/authored-repo"}},
+                    {"id": "PR_AUTH_2", "repository": {"nameWithOwner": "example-org/authored-repo"}},
+                ],
+                has_next_page=True,
+                end_cursor="AUTH_CURSOR",
+            ),
+            ("org:example-org is:open is:pr author:dan", "AUTH_CURSOR"): make_search_payload(
+                [
+                    {"id": "PR_AUTH_2", "repository": {"nameWithOwner": "example-org/authored-repo"}},
+                    {"id": "PR_AUTH_3", "repository": {"nameWithOwner": "example-org/authored-repo"}},
+                ],
+            ),
+            ("org:example-org is:merged is:pr author:dan", None): make_search_payload([]),
+            ("org:example-org is:closed -is:merged is:pr author:dan", None): make_search_payload([]),
+            ("org:example-org is:open is:issue assignee:dan", None): make_search_payload(
+                [{"id": "ISSUE_1", "repository": {"nameWithOwner": "example-org/issue-repo"}}],
+            ),
+            ("org:example-org is:closed is:issue assignee:dan", None): make_search_payload([]),
+            ("org:example-org is:open is:pr review-requested:dan", None): make_search_payload(
+                [{"id": "PR_REVIEW_1", "repository": {"nameWithOwner": "example-org/review-repo"}}],
+            ),
+        },
+        hydrated_nodes={
+            "PR_AUTH_1": {
+                **make_authored_pr(gh_user="dan", url=authored_one_url),
+                "id": "PR_AUTH_1",
+                "number": 1,
+                "title": "Authored One",
+                "repository": {"nameWithOwner": "example-org/authored-repo"},
+                "timelineItems": {"nodes": []},
+            },
+            "PR_AUTH_2": {
+                **make_authored_pr(gh_user="dan", url=authored_two_url),
+                "id": "PR_AUTH_2",
+                "number": 2,
+                "title": "Authored Two",
+                "repository": {"nameWithOwner": "example-org/authored-repo"},
+                "reviewRequests": {"totalCount": 1},
+                "timelineItems": {"nodes": []},
+            },
+            "PR_AUTH_3": {
+                **make_authored_pr(gh_user="dan", url=authored_three_url, review_decision="APPROVED"),
+                "id": "PR_AUTH_3",
+                "number": 3,
+                "title": "Authored Three",
+                "repository": {"nameWithOwner": "example-org/authored-repo"},
+                "timelineItems": {"nodes": []},
+            },
+            "ISSUE_1": {
+                "id": "ISSUE_1",
+                "number": 11,
+                "title": "Assigned issue",
+                "url": issue_url,
+                "state": "OPEN",
+                "repository": {"nameWithOwner": "example-org/issue-repo"},
+                "labels": {"nodes": [{"name": "help wanted"}]},
+                "timelineItems": {
+                    "nodes": [
+                        {
+                            "subject": {
+                                "url": "https://github.com/example-org/issue-repo/pull/99",
+                            },
+                        },
+                    ],
+                },
+            },
+            "PR_REVIEW_1": {
+                **make_authored_pr(gh_user="alice", url=review_url),
+                "id": "PR_REVIEW_1",
+                "number": 7,
+                "title": "Review me",
+                "repository": {"nameWithOwner": "example-org/review-repo"},
+                "author": {"login": "alice", "name": "Alice Example"},
+                "timelineItems": {"nodes": []},
+            },
+        },
+    )
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["example-org"]))
+
+    tasks = {task["gh_url"]: task for task in get_active_tasks(tmp_db)}
+    api_usage = parse_github_api_usage(caplog)
+
+    assert changes == 5
+    assert attention is True
+    assert error is None
+    assert set(tasks) == {
+        authored_one_url,
+        authored_two_url,
+        authored_three_url,
+        issue_url,
+        review_url,
+    }
+    assert tasks[authored_one_url]["status"] == "open"
+    assert tasks[authored_two_url]["status"] == "awaiting review"
+    assert tasks[authored_three_url]["status"] == "approved"
+    assert tasks[issue_url]["status"] == "in progress"
+    assert tasks[review_url]["status"] == "review requested"
+    assert tasks[review_url]["gh_author_name"] == "Alice"
+    assert api_usage["total"] <= 12
+    assert api_usage["graphql"] <= 10
+    assert api_usage["search"] <= 7
+    assert api_usage["hydrate"] <= 3
+    assert api_usage["notifications"] == 1
+    assert api_usage["rest"] == 2
+    assert api_usage["bytes"] > 0
+
+
+@pytest.mark.asyncio
+async def test_run_sync_handles_page_two_item_once_with_duplicate_across_pages(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+
+    first_url = "https://github.com/example-org/example-repo/pull/1"
+    second_url = "https://github.com/example-org/example-repo/pull/2"
+
+    install_search_first_cli_fixture(
+        monkeypatch,
+        gh_user="dan",
+        search_pages={
+            ("org:example-org is:open is:pr author:dan", None): make_search_payload(
+                [{"id": "PR_1", "repository": {"nameWithOwner": "example-org/example-repo"}}],
+                has_next_page=True,
+                end_cursor="NEXT_PAGE",
+            ),
+            ("org:example-org is:open is:pr author:dan", "NEXT_PAGE"): make_search_payload(
+                [
+                    {"id": "PR_1", "repository": {"nameWithOwner": "example-org/example-repo"}},
+                    {"id": "PR_2", "repository": {"nameWithOwner": "example-org/example-repo"}},
+                ],
+            ),
+            ("org:example-org is:merged is:pr author:dan", None): make_search_payload([]),
+            ("org:example-org is:closed -is:merged is:pr author:dan", None): make_search_payload([]),
+            ("org:example-org is:open is:issue assignee:dan", None): make_search_payload([]),
+            ("org:example-org is:closed is:issue assignee:dan", None): make_search_payload([]),
+            ("org:example-org is:open is:pr review-requested:dan", None): make_search_payload([]),
+        },
+        hydrated_nodes={
+            "PR_1": {
+                **make_authored_pr(gh_user="dan", url=first_url),
+                "id": "PR_1",
+                "number": 1,
+                "title": "First PR",
+                "repository": {"nameWithOwner": "example-org/example-repo"},
+                "timelineItems": {"nodes": []},
+            },
+            "PR_2": {
+                **make_authored_pr(gh_user="dan", url=second_url),
+                "id": "PR_2",
+                "number": 2,
+                "title": "Second PR",
+                "repository": {"nameWithOwner": "example-org/example-repo"},
+                "timelineItems": {"nodes": []},
+            },
+        },
+    )
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["example-org"]))
+
+    tasks = {task["gh_url"]: task for task in get_active_tasks(tmp_db)}
+    assert changes == 2
+    assert attention is False
+    assert error is None
+    assert set(tasks) == {first_url, second_url}
+    assert tasks[second_url]["title"] == "Second PR"
 
 
 @pytest.mark.asyncio
