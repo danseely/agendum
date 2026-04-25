@@ -541,9 +541,7 @@ async def _run_sync_once(
         gh_user,
         since=notifications_since,
     )
-    if notifications_ok:
-        set_sync_state(db_path, _NOTIFICATIONS_SINCE_KEY, notification_fetch_started_at)
-    else:
+    if not notifications_ok:
         log.warning("Notification fetch failed — keeping previous notification cursor")
     notification_urls: list[str] = []
     for notif in notifications:
@@ -568,6 +566,8 @@ async def _run_sync_once(
         update_task(db_path, task["id"], seen=0, last_changed_at=now)
         changes += 1
         attention = True
+    if notifications_ok:
+        set_sync_state(db_path, _NOTIFICATIONS_SINCE_KEY, notification_fetch_started_at)
 
     log.info("Sync complete: %d changes, attention=%s", changes, attention)
     return changes, attention, None

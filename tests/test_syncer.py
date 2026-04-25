@@ -639,6 +639,78 @@ async def test_run_sync_preserves_notification_cursor_when_fetch_fails(
 
 
 @pytest.mark.asyncio
+async def test_run_sync_replays_notifications_after_processing_failure(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    repo = "example-org/example-repo"
+    url = "https://github.com/example-org/example-repo/pull/12"
+    original_cursor = "2026-04-24T12:00:00+00:00"
+    task_id = add_task(
+        tmp_db,
+        title="Existing PR",
+        source="pr_authored",
+        status="open",
+        gh_url=url,
+        gh_number=12,
+        project="example-repo",
+        gh_repo=repo,
+    )
+
+    from agendum import gh, syncer as syncer_module
+    from agendum.db import set_sync_state, update_task as db_update_task
+
+    db_update_task(tmp_db, task_id, seen=1)
+    set_sync_state(tmp_db, "github_notifications_since", original_cursor)
+
+    notifications = [
+        {
+            "reason": "comment",
+            "subject": {
+                "url": "https://api.github.com/repos/example-org/example-repo/pulls/12",
+            },
+        }
+    ]
+
+    install_repo_only_search_first_mocks(
+        monkeypatch,
+        repos=[repo],
+        gh_user="reviewer",
+        notifications=notifications,
+    )
+
+    def failing_update_task(db_path: Path, task_id: int, **kwargs) -> None:
+        if kwargs.get("seen") == 0:
+            raise RuntimeError("notification update failed")
+        db_update_task(db_path, task_id, **kwargs)
+
+    monkeypatch.setattr(syncer_module, "update_task", failing_update_task)
+
+    with pytest.raises(RuntimeError, match="notification update failed"):
+        await run_sync(tmp_db, AgendumConfig(repos=[repo]))
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert task is not None
+    assert task["seen"] == 1
+    assert get_sync_state(tmp_db, "github_notifications_since") == original_cursor
+
+    monkeypatch.setattr(syncer_module, "update_task", db_update_task)
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(repos=[repo]))
+
+    task = find_task_by_gh_url(tmp_db, url)
+    replay_cursor = get_sync_state(tmp_db, "github_notifications_since")
+    assert changes == 1
+    assert attention is True
+    assert error is None
+    assert task is not None
+    assert task["seen"] == 0
+    assert replay_cursor is not None
+    assert replay_cursor != original_cursor
+
+
+@pytest.mark.asyncio
 async def test_run_sync_creates_review_requested_pr_with_author_name(tmp_db: Path, monkeypatch) -> None:
     init_db(tmp_db)
     repo = "example-org/example-repo"
