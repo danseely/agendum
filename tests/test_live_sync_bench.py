@@ -200,3 +200,51 @@ def test_summarize_phase_averages_numeric_fields() -> None:
         "total_gh_calls": 8.5,
         "payload_bytes": 800.0,
     }
+
+
+def test_find_budget_regressions_accepts_current_hot_path_shape() -> None:
+    before = {
+        "runs": [
+            {
+                "cold": {"total_gh_calls": 12, "wall_time_s": 18, "changes": 1, "active_task_count": 10, "payload_bytes": 1000, "call_classification": {"repo_graphql": 4, "review_detail_graphql": 2}},
+                "warm": {"total_gh_calls": 12, "wall_time_s": 17, "changes": 0, "active_task_count": 10, "payload_bytes": 1000, "call_classification": {"repo_graphql": 4, "review_detail_graphql": 2}},
+            }
+        ]
+    }
+    after = {
+        "runs": [
+            {
+                "cold": {"total_gh_calls": 8, "wall_time_s": 6, "changes": 1, "active_task_count": 10, "payload_bytes": 1100, "call_classification": {"search_open_authored_prs": 1, "hydrate_open_authored_prs": 1}},
+                "warm": {"total_gh_calls": 8, "wall_time_s": 6, "changes": 0, "active_task_count": 10, "payload_bytes": 1100, "call_classification": {"search_open_authored_prs": 1, "hydrate_open_authored_prs": 1}},
+            }
+        ]
+    }
+
+    assert compare_live_sync_bench.find_budget_regressions(before, after) == []
+
+
+def test_find_budget_regressions_flags_legacy_unknown_and_call_growth() -> None:
+    before = {
+        "runs": [
+            {
+                "cold": {"total_gh_calls": 8, "wall_time_s": 6, "changes": 1, "active_task_count": 10, "payload_bytes": 1000, "call_classification": {"search_open_authored_prs": 1}},
+                "warm": {"total_gh_calls": 8, "wall_time_s": 6, "changes": 0, "active_task_count": 10, "payload_bytes": 1000, "call_classification": {"search_open_authored_prs": 1}},
+            }
+        ]
+    }
+    after = {
+        "runs": [
+            {
+                "cold": {"total_gh_calls": 9, "wall_time_s": 7, "changes": 1, "active_task_count": 10, "payload_bytes": 1200, "call_classification": {"repo_graphql": 1, "other": 1}},
+                "warm": {"total_gh_calls": 10, "wall_time_s": 7, "changes": 0, "active_task_count": 10, "payload_bytes": 1200, "call_classification": {"review_detail_graphql": 2}},
+            }
+        ]
+    }
+
+    regressions = compare_live_sync_bench.find_budget_regressions(before, after)
+
+    assert "cold: gh calls increased from 8.00 to 9.00" in regressions
+    assert "cold: legacy hot-path lane repo_graphql present with 1 call(s)" in regressions
+    assert "cold: unclassified lane other present with 1 call(s)" in regressions
+    assert "warm: gh calls increased from 8.00 to 10.00" in regressions
+    assert "warm: legacy hot-path lane review_detail_graphql present with 2 call(s)" in regressions

@@ -2,13 +2,13 @@
 
 ## Active goal
 
-Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 6` are now complete locally. The active next slice is `phase 7`: remove legacy hot-path code and tighten regression/budget assertions without changing the new steady-state sync semantics.
+Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 7` are now complete locally. The active next work is to refresh PR `#52`, rerun review on the realigned branch, and only return to code if review finds new drift.
 
 ## Scope
 
-- Remove old hot-path helpers no longer used by the switched planner path.
-- Tighten regression/budget assertions so repo fanout and per-review detail N+1 cannot creep back in.
-- Preserve the current phase-6 behavior and benchmark win while reducing leftover implementation drag.
+- Keep the phase-7 implementation aligned with the issue-51 constraints and benchmark shape.
+- Use PR `#52` plus the live benchmark harness as the review surface for final issue-51 validation.
+- Avoid new sync-surface work unless review uncovers a concrete problem.
 
 ## Constraints
 
@@ -27,7 +27,7 @@ Deliver issue `#51` in the staged order from the issue body. `phase 0` through `
 ## Non-goals for this slice
 
 - No semantic redesign of statuses or reconciliation.
-- No new sync-surface behavior beyond cleanup and hardening.
+- No new sync-surface behavior beyond the completed phase-7 cleanup/hardening work unless review requires it.
 
 ## Current drift check
 
@@ -45,4 +45,8 @@ Deliver issue `#51` in the staged order from the issue body. `phase 0` through `
 - The parity-fix `adadaptedinc` phase-6 rerun still materially beats `main` on wall time and `gh` call count.
 - The parity-fix rerun no longer shows the earlier `mulligan#1` active-task delta versus `main`; cold and warm active-task counts now match the baseline.
 - The planner path now preserves the main semantic constraints called out during review: out-of-scope existing authored/issue rows stay protected by planner fetched-scope gating, authored/issue labels still map into `tags`, and archived repos are suppressed on both org-backed and explicit-repo planner paths.
-- No unapproved drift is currently known against the issue-51 phase-6 goals; the next work is planned phase-7 cleanup/hardening.
+- `src/agendum/gh.py` no longer carries the old repo-fanout and per-review-detail hot-path helpers that the planner switch made dead.
+- `src/agendum/syncer.py` no longer carries the legacy `_run_sync_once_legacy()` branch.
+- `scripts/compare_live_sync_bench.py` now has a `--fail-on-regression` budget gate that fails if a candidate run reintroduces `repo_graphql`, `review_detail_graphql`, `other`, or a higher total `gh` call count.
+- The phase-7 `adadaptedinc` rerun still materially beats `main`: cold `18.46s -> 6.24s`, warm `17.36s -> 6.36s`, and `12 -> 8` `gh` calls with active-task counts unchanged at `10`.
+- No unapproved drift is currently known against the issue-51 implementation plan; the next work is PR refresh plus renewed review, not more planned implementation.

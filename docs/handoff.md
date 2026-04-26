@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Advance issue `#51` from the completed phase-6 switch to phase-7 cleanup and hardening.
+Issue `#51` implementation is complete locally through phase 7; next step is to push the current state to PR `#52` and resume review on the updated branch.
 
 ## Branch
 
@@ -71,6 +71,16 @@ Advance issue `#51` from the completed phase-6 switch to phase-7 cleanup and har
 - Ran `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-phase6-parity.json`.
 - Ran `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6-parity.json`.
 - Confirmed the parity rerun still materially beats `main` and no longer shows the earlier `mulligan#1` active-task delta.
+- Removed the dead repo-fanout and per-review-detail helpers from `src/agendum/gh.py`.
+- Removed the dead `_run_sync_once_legacy()` branch from `src/agendum/syncer.py`.
+- Removed legacy-only edge-case tests from `tests/test_gh_edge_cases.py` and updated `tests/test_gh.py` to stop importing removed helpers.
+- Added `find_budget_regressions()` plus `--fail-on-regression` to `scripts/compare_live_sync_bench.py`.
+- Added `tests/test_live_sync_bench.py` coverage for the phase-7 benchmark budget gate.
+- Ran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the phase-7 cleanup and hardening changes.
+- Ran `uv run python -m py_compile scripts/compare_live_sync_bench.py src/agendum/gh.py src/agendum/syncer.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_live_sync_bench.py`.
+- Ran `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-phase7.json`.
+- Ran `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase7.json`.
+- Confirmed the phase-7 rerun still materially beats `main`: cold `18.46s -> 6.24s`, warm `17.36s -> 6.36s`, and `12 -> 8` `gh` calls with active-task counts unchanged at `10`.
 
 ## Validation
 
@@ -140,7 +150,8 @@ Advance issue `#51` from the completed phase-6 switch to phase-7 cleanup and har
 - The harness must measure real `gh` usage without mutating the user's live workspace.
 - The current code has no built-in sync metrics surface, so the harness needs to instrument `gh` calls directly.
 - The benchmark outputs are local temp data, not checked-in artifacts.
-- The phase-6 benchmark improves wall time and `gh` call count materially while matching baseline active-task counts on the parity rerun.
+- The current phase-7 benchmark still improves wall time and `gh` call count materially while matching baseline active-task counts.
+- The phase-7 code/docs state is ready to push to PR `#52`; after push, the next work is PR refresh plus renewed review.
 
 ## Benchmark snapshot
 
@@ -161,15 +172,18 @@ Advance issue `#51` from the completed phase-6 switch to phase-7 cleanup and har
 - The corrected call mix now shows `repo_graphql` and `review_detail_graphql` removed from the hot path, replaced by `search_open_*` plus `hydrate_open_*` lanes without any benchmark traffic falling into `other`.
 - Phase-6 parity rerun versus baseline: cold `6.30s` vs `18.46s` (`-65.9%`), warm `6.17s` vs `17.36s` (`-64.4%`), `8` `gh` calls vs `12` (`-33.3%`), and active-task counts matched baseline at `10` on both cold and warm runs.
 - Phase-6 parity payload bytes increased slightly again to `336314` (`+15.2%`), still within the same reduced-call batched-response tradeoff.
+- Phase-7 rerun versus baseline: cold `6.24s` vs `18.46s` (`-66.2%`), warm `6.36s` vs `17.36s` (`-63.3%`), `8` `gh` calls vs `12` (`-33.3%`), and active-task counts still matched baseline at `10` on both cold and warm runs.
+- The phase-7 candidate keeps `repo_graphql`, `review_detail_graphql`, and `other` at `0`, and `scripts/compare_live_sync_bench.py --fail-on-regression` passes against the baseline.
 
 ## Next actions
 
-1. Remove legacy hot-path helpers that are no longer used by the planner path.
-2. Tighten regression/budget assertions so repo fanout and per-review detail N+1 cannot return unnoticed.
-3. Keep the next live benchmark rerun materially better than `main` while preserving the current phase-6 behavior.
+1. Push the current phase-7 cleanup/hardening state to PR `#52`.
+2. Refresh the PR summary/commentary with the phase-7 rerun and the new benchmark budget gate.
+3. Resume review on the updated branch and only return to implementation if new findings appear.
 
 ## Drift from original plan
 
 - The previously identified phase-6 semantic drift has been resolved in code and regression coverage, and the parity rerun confirms the benchmark gate still holds.
 - Planning memory was missing from the repo and has now been added.
 - The repo memory had stale “checkpoint PR” language after PR `#52` was opened; `docs/plan.md`, `docs/status.md`, and `docs/handoff.md` now point at the active post-phase-4 state instead.
+- No known implementation drift remains against the issue-51 staged plan; phase 7 is complete locally and the remaining work is PR/update review flow.

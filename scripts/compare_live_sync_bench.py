@@ -17,12 +17,22 @@ NUMERIC_FIELDS = (
     "payload_bytes",
 )
 PHASES = ("cold", "warm")
+LEGACY_HOT_PATH_LANES = ("repo_graphql", "review_detail_graphql")
+UNCLASSIFIED_LANES = ("other",)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("before", type=Path, help="Baseline benchmark JSON")
     parser.add_argument("after", type=Path, help="Candidate benchmark JSON")
+    parser.add_argument(
+        "--fail-on-regression",
+        action="store_true",
+        help=(
+            "Exit non-zero if the candidate reintroduces legacy hot-path calls, "
+            "emits unclassified gh calls, or increases total gh calls."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -80,6 +90,34 @@ def print_counter_delta(
         print(f"  {key}: before={before_value} after={after_value} delta={sign}{delta}")
 
 
+def find_budget_regressions(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> list[str]:
+    regressions: list[str] = []
+    for phase in PHASES:
+        before_summary = summarize_phase(before, phase)
+        after_summary = summarize_phase(after, phase)
+        if after_summary["total_gh_calls"] > before_summary["total_gh_calls"]:
+            regressions.append(
+                f"{phase}: gh calls increased from "
+                f"{before_summary['total_gh_calls']:.2f} to {after_summary['total_gh_calls']:.2f}"
+            )
+
+        after_calls = aggregate_counter(after, phase, "call_classification")
+        for lane in LEGACY_HOT_PATH_LANES:
+            if after_calls.get(lane, 0):
+                regressions.append(
+                    f"{phase}: legacy hot-path lane {lane} present with {after_calls[lane]} call(s)"
+                )
+        for lane in UNCLASSIFIED_LANES:
+            if after_calls.get(lane, 0):
+                regressions.append(
+                    f"{phase}: unclassified lane {lane} present with {after_calls[lane]} call(s)"
+                )
+    return regressions
+
+
 def main() -> None:
     args = parse_args()
     before = load_report(args.before)
@@ -121,6 +159,14 @@ def main() -> None:
             before=aggregate_counter(before, phase, "lane_pagination_counts"),
             after=aggregate_counter(after, phase, "lane_pagination_counts"),
         )
+
+    regressions = find_budget_regressions(before, after)
+    if regressions:
+        print("\nBudget regressions:")
+        for regression in regressions:
+            print(f"  - {regression}")
+        if args.fail_on_regression:
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

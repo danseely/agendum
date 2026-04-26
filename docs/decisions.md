@@ -69,3 +69,10 @@
 - Reason: The rerun still materially beats `main`, preserves the reduced hot-path call shape, and no longer shows the earlier `mulligan#1` semantic delta versus baseline.
 - Impact: The active planning slice is now legacy hot-path cleanup and regression-budget hardening rather than more phase-6 parity work.
 - Plan change: yes
+
+## 2026-04-25
+
+- Decision: Enforce the phase-7 benchmark budget with `scripts/compare_live_sync_bench.py --fail-on-regression` instead of relying on manual review of the printed delta report.
+- Reason: Phase 7 is meant to stop repo fanout, per-review detail N+1, and unclassified `gh` traffic from creeping back in unnoticed; a failing compare mode makes that check repeatable.
+- Impact: Future live before/after comparisons can fail fast when a candidate adds `repo_graphql`, `review_detail_graphql`, `other`, or a higher total `gh` call count.
+- Plan change: no

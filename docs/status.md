@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Issue `#51` / phase 7 cleanup and hardening after the completed phase-6 switch.
+Issue `#51` implementation complete locally through phase 7; next step is PR refresh and renewed review.
 
 ## Done
 
@@ -65,10 +65,19 @@ Issue `#51` / phase 7 cleanup and hardening after the completed phase-6 switch.
 - Reran the live phase-6 benchmark after the parity fixes and captured `/tmp/agendum-live-sync-bench-pr52-phase6-parity.json`.
 - Confirmed the parity branch still materially beats `main`: cold `18.46s -> 6.30s`, warm `17.36s -> 6.17s`, and `12 -> 8` `gh` calls.
 - Confirmed the parity rerun no longer shows the earlier `mulligan#1` semantic delta; cold and warm active-task counts both match the baseline at `10`.
+- Removed dead legacy hot-path helpers from `src/agendum/gh.py`, including the old repo-fanout and per-review-detail fetch paths.
+- Removed `_run_sync_once_legacy()` from `src/agendum/syncer.py`.
+- Removed the orphaned legacy `gh` edge-case tests that only exercised the deleted hot path.
+- Added `--fail-on-regression` to `scripts/compare_live_sync_bench.py` so benchmark comparisons can fail fast on `repo_graphql`, `review_detail_graphql`, `other`, or total `gh` call-count regressions.
+- Added benchmark-budget regression coverage in `tests/test_live_sync_bench.py`.
+- Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the phase-7 cleanup.
+- Reran the live benchmark for phase 7 and captured `/tmp/agendum-live-sync-bench-pr52-phase7.json`.
+- Confirmed the phase-7 rerun still materially beats `main`: cold `18.46s -> 6.24s`, warm `17.36s -> 6.36s`, and `12 -> 8` `gh` calls, with no `repo_graphql`, `review_detail_graphql`, or `other` calls in the candidate.
+- Confirmed `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase7.json` exits cleanly.
 
 ## In progress
 
-- No code work is in progress; planning memory is being advanced from phase 6 to phase 7.
+- No code work is in progress; the current branch state is being pushed to PR `#52` and prepared for renewed review.
 
 ## Blocked
 
@@ -76,6 +85,5 @@ Issue `#51` / phase 7 cleanup and hardening after the completed phase-6 switch.
 
 ## Next
 
-- Remove legacy hot-path helpers that are no longer used by the planner path.
-- Tighten regression/budget assertions so repo fanout and per-review detail N+1 cannot return unnoticed.
-- Keep the next live benchmark rerun at or below the current parity-branch call shape and materially better than `main`.
+- Refresh the PR status summary with the phase-7 rerun and the new `--fail-on-regression` benchmark gate.
+- Return to review on the updated branch and only resume implementation if review finds new issues.
