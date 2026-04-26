@@ -408,14 +408,14 @@ async def test_run_sync_org_path_preserves_out_of_scope_authored_tasks(
     monkeypatch,
 ) -> None:
     init_db(tmp_db)
-    url = "https://github.com/org/other-repo/pull/20"
+    url = "https://github.com/other-org/other-repo/pull/20"
     add_task(
         tmp_db,
         title="Out of scope authored PR",
         source="pr_authored",
         status="open",
         gh_url=url,
-        gh_repo="org/other-repo",
+        gh_repo="other-org/other-repo",
         gh_number=20,
     )
 
@@ -463,6 +463,88 @@ async def test_run_sync_org_path_preserves_out_of_scope_authored_tasks(
     assert error is None
     assert task is not None
     assert task["status"] == "open"
+
+
+async def test_run_sync_org_path_verifies_tracked_authored_in_dormant_in_scope_repo(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    """Tracked authored PRs in dormant in-scope repos must still be verified.
+
+    The repo is part of a configured org but currently has zero open
+    discovered items, so org-wide search returns nothing for its lane. The
+    tracked task must still flow into terminal verification or it stays
+    open forever.
+    """
+    init_db(tmp_db)
+    url = "https://github.com/org/dormant-repo/pull/77"
+    add_task(
+        tmp_db,
+        title="Dormant authored PR",
+        source="pr_authored",
+        status="open",
+        gh_url=url,
+        gh_repo="org/dormant-repo",
+        gh_node_id="PR_node_77",
+        gh_number=77,
+    )
+
+    captured_authored_verify_calls: list[list[dict]] = []
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_empty_search(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_empty_hydrate(items, *, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_verify_missing_authored(prs, *, batch_size=50) -> tuple[list, bool]:
+        captured_authored_verify_calls.append(prs)
+        return [
+            {
+                "gh_node_id": "PR_node_77",
+                "gh_url": url,
+                "state": "MERGED",
+                "is_assigned_to_user": None,
+                "is_review_requested": None,
+            }
+        ], True
+
+    async def fake_empty_verify_issues(issues, *, gh_user, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_empty_verify_review(prs, *, gh_user, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_fetch_notifications(gh_user) -> list:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "search_open_authored_prs_with_completeness", fake_empty_search)
+    monkeypatch.setattr(gh, "search_open_assigned_issues_with_completeness", fake_empty_search)
+    monkeypatch.setattr(gh, "search_open_review_requested_prs_with_completeness", fake_empty_search)
+    monkeypatch.setattr(gh, "hydrate_open_authored_prs_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "hydrate_open_issues_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "hydrate_open_review_prs_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "verify_missing_authored_prs_with_completeness", fake_verify_missing_authored)
+    monkeypatch.setattr(gh, "verify_missing_issues_with_completeness", fake_empty_verify_issues)
+    monkeypatch.setattr(gh, "verify_missing_review_prs_with_completeness", fake_empty_verify_review)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["org"]))
+
+    assert error is None
+    assert changes == 1
+    assert attention is False
+    assert len(captured_authored_verify_calls) == 1
+    assert [item["gh_url"] for item in captured_authored_verify_calls[0]] == [url]
+    task = find_task_by_gh_url(tmp_db, url)
+    assert task is not None
+    assert task["status"] == "merged"
 
 
 async def test_run_sync_authored_pr_preserves_label_tags(
@@ -673,6 +755,73 @@ async def test_run_sync_repo_path_preserves_tasks_for_archived_repos(
     assert error is None
     assert task is not None
     assert task["status"] == "open"
+
+
+async def test_run_sync_repo_path_keeps_unknown_archive_state_repo_in_scope(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    """Partial archive lookup must not silently drop healthy repos.
+
+    Scoped repo ``org/healthy-repo`` is missing from the archive-state
+    response (e.g. a flaky GraphQL batch), but it is not actually archived.
+    The planner must keep it in scope so its open authored PR is hydrated
+    and the existing tracked task is updated rather than left stale.
+    """
+    init_db(tmp_db)
+    url = "https://github.com/org/healthy-repo/pull/42"
+    add_task(
+        tmp_db,
+        title="Healthy repo authored PR",
+        source="pr_authored",
+        status="awaiting review",
+        gh_url=url,
+        gh_repo="org/healthy-repo",
+        gh_node_id="PR_node_42",
+        gh_number=42,
+    )
+
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                repo_full="org/healthy-repo",
+                gh_node_id="PR_node_42",
+                number=42,
+                title="Healthy repo authored PR",
+                review_decision="APPROVED",
+            )
+        ],
+        expected_repos=["org/healthy-repo"],
+    )
+
+    from agendum import gh
+
+    async def fake_fetch_repo_archive_states_partial(repos, *, batch_size=20):
+        # Simulate a partial response: the repo is missing entirely from
+        # the lookup. A naive ``state is False`` filter would drop it
+        # silently; the fix must keep unknown repos in scope.
+        return {}, False
+
+    monkeypatch.setattr(
+        gh,
+        "fetch_repo_archive_states_with_completeness",
+        fake_fetch_repo_archive_states_partial,
+    )
+
+    changes, attention, error = await run_sync(
+        tmp_db, AgendumConfig(repos=["org/healthy-repo"]),
+    )
+
+    assert error is None
+    assert changes == 1
+    assert attention is True
+    task = find_task_by_gh_url(tmp_db, url)
+    assert task is not None
+    assert task["status"] == "approved"
 
 
 async def test_run_sync_preserves_tasks_when_repo_fetch_fails(

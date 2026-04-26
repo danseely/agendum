@@ -704,6 +704,8 @@ def _task_repo_for_scope(task: dict[str, Any]) -> str | None:
 def _planner_active_repos(
     *,
     scoped_repos: list[str],
+    scoped_orgs: list[str],
+    existing_tasks: list[dict[str, Any]],
     authored_hydrated: list[dict[str, Any]],
     issues_hydrated: list[dict[str, Any]],
     review_hydrated: list[dict[str, Any]],
@@ -717,6 +719,19 @@ def _planner_active_repos(
             repo_full = ((item.get("repository") or {}).get("nameWithOwner") or "")
             if repo_full:
                 active_repos.add(repo_full)
+
+    # Tracked rows in repos within the configured orgs are still in scope
+    # even when the repo currently has zero open discovered items. Without
+    # this, terminal verification skips dormant in-scope repos and tracked
+    # authored/issue rows stay open forever.
+    scoped_org_lower = {org.lower() for org in scoped_orgs}
+    for task in existing_tasks:
+        repo_full = _task_repo_for_scope(task)
+        if not repo_full:
+            continue
+        owner = repo_full.split("/", 1)[0]
+        if owner.lower() in scoped_org_lower:
+            active_repos.add(repo_full)
     return active_repos
 
 
@@ -788,11 +803,16 @@ async def _run_sync_once_planner(
     issues_discovered = [item for item in issues_discovered if _keep(item)]
     review_discovered = [item for item in review_discovered if _keep(item)]
     if scoped_repos:
-        repo_archive_states, _ = await gh.fetch_repo_archive_states_with_completeness(scoped_repos)
+        repo_archive_states, _ = await gh.fetch_repo_archive_states_with_completeness(
+            scoped_repos
+        )
+        # Drop only repos confirmed archived. Repos with no entry came back
+        # from a partial lookup; treat them as in-scope so a flaky archive
+        # query does not silently remove healthy repos from planner scope.
         scoped_repos = [
             repo
             for repo in scoped_repos
-            if repo_archive_states.get(repo) is False
+            if repo_archive_states.get(repo) is not True
         ]
         authored_discovered = [
             item
@@ -827,6 +847,8 @@ async def _run_sync_once_planner(
     review_hydrated = [item for item in review_hydrated if not _repo_is_archived(item)]
     active_repos = _planner_active_repos(
         scoped_repos=scoped_repos,
+        scoped_orgs=scoped_orgs,
+        existing_tasks=existing,
         authored_hydrated=authored_hydrated,
         issues_hydrated=issues_hydrated,
         review_hydrated=review_hydrated,

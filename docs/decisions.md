@@ -83,3 +83,17 @@
 - Reason: The current branch still violates issue `#51` semantics in two places: org-backed terminal verification can miss tracked rows in dormant repos, and explicit-repo archive-state incompleteness can silently drop healthy repos from planner scope.
 - Impact: The active work shifts from “review/closeout” back to targeted parity fixes plus regression coverage and rerun validation.
 - Plan change: yes
+
+## 2026-04-26
+
+- Decision: Derive org-backed `active_repos` from configured `scoped_orgs` membership of tracked tasks in addition to repos with hydrated open items, instead of treating "no open items" as "out of scope".
+- Reason: The previous narrowing conflated two distinct conditions and let tracked authored/issue rows in in-scope dormant repos skip terminal verification forever. Owner-of-`gh_repo` matching `scoped_orgs` is the correct in-scope signal for the org-backed path.
+- Impact: Tracked authored PRs and issues in dormant in-scope repos now flow through terminal verification on the org-backed path. Tasks in foreign orgs remain untouched, preserving the prior fetched-scope safety property.
+- Plan change: no
+
+## 2026-04-26
+
+- Decision: On the explicit-repo path, drop only repos confirmed archived by the GraphQL response (`isArchived` is `True`) instead of dropping every repo whose state is not literally `False`.
+- Reason: A partial archive-state lookup leaves some repos with no entry. The previous filter dropped those silently, removing healthy repos from planner scope and freezing their tracked tasks. Treating unknown repos as in-scope keeps them flowing through hydration and verification, and the existing per-lane completeness signals still cover real coverage gaps.
+- Impact: Flaky archive-state batches no longer silently shrink explicit-repo planner scope. No new close behavior: repos confirmed archived are still dropped exactly as before.
+- Plan change: no

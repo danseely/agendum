@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Issue `#51` is blocked on two fresh review findings against PR `#52`; the next work is to fix those parity regressions, rerun validation, and only then return to review.
+Both fresh review findings against PR `#52` are now fixed in code with regression coverage and the unit suites pass. The remaining work is the live `adadaptedinc` benchmark rerun plus a PR-status refresh before returning to review.
 
 ## Branch
 
@@ -151,10 +151,9 @@ Issue `#51` is blocked on two fresh review findings against PR `#52`; the next w
 - The current code has no built-in sync metrics surface, so the harness needs to instrument `gh` calls directly.
 - The benchmark outputs are local temp data, not checked-in artifacts.
 - The current phase-7 benchmark still improves wall time and `gh` call count materially while matching baseline active-task counts.
-- Fresh review found two blocking parity regressions:
-- org-backed planner sync can skip terminal verification for tracked authored PRs and issues in repos that currently have zero open discovered items
-- explicit-repo archive-state incompleteness can silently drop healthy repos from planner scope
-- The phase-7 code/docs state is pushed on PR `#52` through commit `81eef6a`, but the PR body/status now needs to reflect that it is blocked on those fixes rather than review-ready.
+- Both fresh review findings are now fixed locally with regression coverage; the live benchmark rerun is the only remaining gate before returning to review.
+- The previous local baseline at `/tmp/agendum-live-sync-bench-baseline.json` is no longer present, so the next live rerun must regenerate the baseline from `main` before producing the candidate comparison.
+- The parity-fix commit is local only — PR `#52` still shows the blocked phase-7 state and needs a push plus body refresh once the live benchmark passes.
 
 ## Benchmark snapshot
 
@@ -180,13 +179,14 @@ Issue `#51` is blocked on two fresh review findings against PR `#52`; the next w
 
 ## Next actions
 
-1. Fix org-backed terminal verification scope for tracked authored PRs and issues in otherwise dormant repos, with regression coverage.
-2. Fix explicit-repo archive-state completeness handling so partial lookups suppress closes instead of silently dropping repos, with regression coverage.
-3. Rerun the focused test suite plus the live benchmark gate, then refresh PR `#52` and return to review.
+1. Regenerate the live `main` baseline: `git switch main && uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-baseline.json`.
+2. Switch back and capture the candidate: `git switch codex/issue-51-sync-foundation && uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-parity.json`.
+3. Run the gate: `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-parity.json`.
+4. Push the parity-fix commit to `origin/codex/issue-51-sync-foundation`, refresh PR `#52` body with the latest comparison, and return to review.
 
 ## Drift from original plan
 
 - The previously identified phase-6 semantic drift has been resolved in code and regression coverage, and the parity rerun confirms the benchmark gate still holds.
 - Planning memory was missing from the repo and has now been added.
 - The repo memory had stale “checkpoint PR” language after PR `#52` was opened; `docs/plan.md`, `docs/status.md`, and `docs/handoff.md` now point at the active post-phase-4 state instead.
-- Fresh renewed review found unapproved drift against the issue-51 staged plan, so the branch is no longer in “implementation complete” state until those fixes land.
+- The post-phase-7 review surfaced two parity regressions (org-backed terminal verification scope, explicit-repo archive-state incompleteness). Both are now resolved in code with regression coverage and a live benchmark rerun is queued; no further unapproved drift is open.

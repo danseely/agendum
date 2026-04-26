@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Issue `#51` is blocked on two fresh review findings against PR `#52`; the next step is to restore semantic parity before treating the branch as implementation-complete.
+Both fresh review findings against PR `#52` have been fixed in code and regression coverage. The remaining step before returning to review is the live `adadaptedinc` benchmark rerun plus a PR status refresh.
 
 ## Done
 
@@ -75,19 +75,25 @@ Issue `#51` is blocked on two fresh review findings against PR `#52`; the next s
 - Confirmed the phase-7 rerun still materially beats `main`: cold `18.46s -> 6.24s`, warm `17.36s -> 6.36s`, and `12 -> 8` `gh` calls, with no `repo_graphql`, `review_detail_graphql`, or `other` calls in the candidate.
 - Confirmed `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase7.json` exits cleanly.
 
+- Extended `_planner_active_repos()` in `src/agendum/syncer.py` to add tracked-task repos whose owner is in `scoped_orgs`, restoring terminal verification for dormant in-scope repos on the org-backed path.
+- Changed the explicit-repo archive filter in `_run_sync_once_planner()` to drop only repos confirmed archived (`is True`); repos missing from a partial archive-state response stay in scope.
+- Updated `test_run_sync_org_path_preserves_out_of_scope_authored_tasks` so its `gh_repo` is in a foreign org (`other-org/other-repo`) — the existing safety semantic now matches the test name.
+- Added `test_run_sync_org_path_verifies_tracked_authored_in_dormant_in_scope_repo` to lock in Fix 1 (dormant in-scope tracked task gets verified and closed when terminal).
+- Added `test_run_sync_repo_path_keeps_unknown_archive_state_repo_in_scope` to lock in Fix 2 (partial archive lookup keeps healthy repos in scope and updates their tasks normally).
+- Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` (114 passed) and `uv run pytest` (276 passed) on the parity-fix branch.
+
 ## In progress
 
-- No code work is in progress; planning memory is being updated to reflect the fresh review blockers and the PR is being realigned to that status.
+- No code work is in progress; the parity fixes are landed locally and the PR is awaiting a live benchmark rerun and review-status refresh.
 
 ## Blocked
 
 - No repo-checked-in benchmark artifact exists; the baseline and subsequent slice runs live in local `/tmp` output only.
-- Fresh review found two implementation blockers:
-- org-backed planner sync can leave tracked authored PRs and issues open forever when their repo currently has zero open discovered items
-- explicit-repo archived-repo filtering can silently drop healthy repos from planner scope when archive-state lookup is incomplete
+- The local `/tmp/agendum-live-sync-bench-baseline.json` from the prior session is no longer present, so the next live benchmark rerun must regenerate the baseline from `main` before producing the candidate comparison.
 
 ## Next
 
-- Fix org-backed terminal verification scope for tracked authored PRs and issues in otherwise dormant repos, with regression coverage.
-- Fix explicit-repo archive-state completeness handling so partial archive lookups suppress closes instead of silently dropping repos, with regression coverage.
-- Rerun `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` plus the live benchmark gate, then refresh PR `#52` and return to review.
+- Regenerate the live `main` baseline with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-baseline.json`.
+- Run the candidate from this branch with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-parity.json`.
+- Confirm `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-parity.json` exits cleanly.
+- Push the parity-fix commit to `origin/codex/issue-51-sync-foundation`, refresh PR `#52` body with the latest comparison, and return to review.

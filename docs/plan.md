@@ -2,7 +2,7 @@
 
 ## Active goal
 
-Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 7` remain the intended implementation slices, but a fresh review found two blocking parity drifts that must be fixed before this branch can be treated as implementation-complete.
+Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 7` remain the intended implementation slices. The two blocking parity drifts surfaced during the latest review have now been fixed in code and unit-test coverage; the remaining work is a live benchmark rerun against `adadaptedinc` plus a PR-status refresh before returning to review.
 
 ## Scope
 
@@ -49,7 +49,8 @@ Deliver issue `#51` in the staged order from the issue body. `phase 0` through `
 - `src/agendum/syncer.py` no longer carries the legacy `_run_sync_once_legacy()` branch.
 - `scripts/compare_live_sync_bench.py` now has a `--fail-on-regression` budget gate that fails if a candidate run reintroduces `repo_graphql`, `review_detail_graphql`, `other`, or a higher total `gh` call count.
 - The phase-7 `adadaptedinc` rerun still materially beats `main`: cold `18.46s -> 6.24s`, warm `17.36s -> 6.36s`, and `12 -> 8` `gh` calls with active-task counts unchanged at `10`.
-- Unapproved drift is now known against the issue-51 implementation plan:
-- Org-backed planner sync currently derives authored/issue verification scope only from repos with hydrated open items, so tracked rows in otherwise dormant repos can skip terminal verification and stay open forever.
-- Explicit-repo planner sync currently ignores archive-state completeness and can silently drop healthy repos from planner scope when archive-state lookup is partial.
-- The next work is to fix those two parity regressions, rerun the focused suite plus the live benchmark gate, and only then return to review.
+- Both review-driven parity regressions are now resolved in code with regression coverage:
+- Org-backed planner sync now derives `active_repos` from configured `scoped_orgs` membership of tracked tasks in addition to hydrated open items, so tracked authored/issue rows in dormant in-scope repos still flow through terminal verification.
+- Explicit-repo planner sync now drops only repos confirmed archived (`isArchived` is `True`); repos missing from a partial archive-state response stay in scope so a flaky lookup cannot silently remove healthy repos from the planner.
+- The focused unit suite (`tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py`) and the full repo suite both pass on the parity-fix branch.
+- The next work is a live `adadaptedinc` benchmark rerun plus the `scripts/compare_live_sync_bench.py --fail-on-regression` gate, and a PR `#52` status refresh before returning to review.
