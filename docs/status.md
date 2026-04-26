@@ -77,7 +77,7 @@ Issue `#51` implementation complete locally through phase 7; next step is PR ref
 
 ## In progress
 
-- No code work is in progress; the current branch state is being pushed to PR `#52` and prepared for renewed review.
+- No code work is in progress; commit `5cad32b` is now on PR `#52` and the branch is being prepared for renewed review.
 
 ## Blocked
 

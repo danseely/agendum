@@ -151,7 +151,7 @@ Issue `#51` implementation is complete locally through phase 7; next step is to 
 - The current code has no built-in sync metrics surface, so the harness needs to instrument `gh` calls directly.
 - The benchmark outputs are local temp data, not checked-in artifacts.
 - The current phase-7 benchmark still improves wall time and `gh` call count materially while matching baseline active-task counts.
-- The phase-7 code/docs state is ready to push to PR `#52`; after push, the next work is PR refresh plus renewed review.
+- The phase-7 code/docs state is pushed on PR `#52` in commit `5cad32b`; the next work is PR refresh plus renewed review.
 
 ## Benchmark snapshot
 
@@ -177,9 +177,9 @@ Issue `#51` implementation is complete locally through phase 7; next step is to 
 
 ## Next actions
 
-1. Push the current phase-7 cleanup/hardening state to PR `#52`.
-2. Refresh the PR summary/commentary with the phase-7 rerun and the new benchmark budget gate.
-3. Resume review on the updated branch and only return to implementation if new findings appear.
+1. Refresh the PR summary/commentary with the phase-7 rerun and the new benchmark budget gate.
+2. Resume review on the updated branch and only return to implementation if new findings appear.
+3. If review stays clean, treat issue `#51` implementation as complete and decide whether any follow-up cleanup belongs in a separate issue.
 
 ## Drift from original plan
 
