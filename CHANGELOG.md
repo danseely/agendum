@@ -1,3 +1,20 @@
+## v0.6.0 (2026-04-26)
+
+### Feat
+
+- **sync**: complete phase 6 planner hot path
+- **sync**: add issue 51 sync refactor groundwork
+
+### Fix
+
+- **sync**: preserve tracked title when verification closes a row
+- **sync**: close issue-51 parity gaps in planner scope
+- **sync**: restore phase 6 parity
+
+### Refactor
+
+- **sync**: finish phase 7 cleanup
+
 ## v0.5.1 (2026-04-22)
 
 ### Fix
