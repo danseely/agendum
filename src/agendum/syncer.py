@@ -376,7 +376,7 @@ def _normalize_verified_authored_task(
         return None
     repo_full = tracked.gh_repo
     return NormalizedIncomingTask(
-        title="",
+        title=tracked.title or "",
         source="pr_authored",
         status="merged" if verified.state == "MERGED" else "closed",
         project=gh.extract_repo_short_name(repo_full) if repo_full else None,
@@ -395,7 +395,7 @@ def _normalize_verified_issue_task(
         return None
     repo_full = tracked.gh_repo
     return NormalizedIncomingTask(
-        title="",
+        title=tracked.title or "",
         source="issue",
         status="closed",
         project=gh.extract_repo_short_name(repo_full) if repo_full else None,
@@ -414,7 +414,7 @@ def _normalize_verified_review_task(
         return None
     repo_full = tracked.gh_repo
     return NormalizedIncomingTask(
-        title="",
+        title=tracked.title or "",
         source="pr_review",
         status="done",
         project=gh.extract_repo_short_name(repo_full) if repo_full else None,

@@ -430,7 +430,7 @@ def test_build_sync_plan_authored_heavy_world(authored_heavy_world: dict) -> Non
             gh_number=3,
         ),
         NormalizedIncomingTask(
-            title="",
+            title="Second PR",
             source="pr_authored",
             status="merged",
             project="repo-b",
@@ -522,7 +522,7 @@ def test_build_sync_plan_partial_failure_world(partial_failure_world: dict) -> N
         {"https://github.com/org/repo-p/pull/52"}
     )
     assert plan.normalized_incoming_tasks[-1] == NormalizedIncomingTask(
-        title="",
+        title="Merged one",
         source="pr_authored",
         status="merged",
         project="repo-p",
@@ -620,6 +620,71 @@ async def test_run_sync_marks_closed_authored_pr_closed(tmp_db: Path, monkeypatc
     assert error is None
     assert task is not None
     assert task["status"] == "closed"
+    assert task["title"] == "Old PR"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_marks_closed_assigned_issue_closed(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/issues/7"
+    add_task(tmp_db, title="Old issue", source="issue", status="open", gh_url=url)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        verified_issues=[
+            {
+                "gh_node_id": "I_node_7",
+                "gh_url": url,
+                "state": "CLOSED",
+                "is_assigned_to_user": False,
+            }
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "closed"
+    assert task["title"] == "Old issue"
+
+
+@pytest.mark.asyncio
+async def test_run_sync_marks_dropped_review_request_done(tmp_db: Path, monkeypatch) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/example-org/example-repo/pull/9"
+    add_task(tmp_db, title="Old review PR", source="pr_review", status="review requested", gh_url=url)
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="reviewer",
+        verified_review_prs=[
+            {
+                "gh_node_id": "PR_node_9",
+                "gh_url": url,
+                "state": "OPEN",
+                "is_review_requested": False,
+            }
+        ],
+        expected_repos=["example-org/example-repo"],
+    )
+
+    changes, attention, error = await run_sync(
+        tmp_db,
+        AgendumConfig(repos=["example-org/example-repo"]),
+    )
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert error is None
+    assert task is not None
+    assert task["status"] == "done"
+    assert task["title"] == "Old review PR"
 
 
 @pytest.mark.asyncio
