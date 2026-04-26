@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Issue `#51` implementation complete locally through phase 7; next step is PR refresh and renewed review.
+Issue `#51` is blocked on two fresh review findings against PR `#52`; the next step is to restore semantic parity before treating the branch as implementation-complete.
 
 ## Done
 
@@ -77,13 +77,17 @@ Issue `#51` implementation complete locally through phase 7; next step is PR ref
 
 ## In progress
 
-- No code work is in progress; commit `5cad32b` is now on PR `#52` and the branch is being prepared for renewed review.
+- No code work is in progress; planning memory is being updated to reflect the fresh review blockers and the PR is being realigned to that status.
 
 ## Blocked
 
 - No repo-checked-in benchmark artifact exists; the baseline and subsequent slice runs live in local `/tmp` output only.
+- Fresh review found two implementation blockers:
+- org-backed planner sync can leave tracked authored PRs and issues open forever when their repo currently has zero open discovered items
+- explicit-repo archived-repo filtering can silently drop healthy repos from planner scope when archive-state lookup is incomplete
 
 ## Next
 
-- Refresh the PR status summary with the phase-7 rerun and the new `--fail-on-regression` benchmark gate.
-- Return to review on the updated branch and only resume implementation if review finds new issues.
+- Fix org-backed terminal verification scope for tracked authored PRs and issues in otherwise dormant repos, with regression coverage.
+- Fix explicit-repo archive-state completeness handling so partial archive lookups suppress closes instead of silently dropping repos, with regression coverage.
+- Rerun `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` plus the live benchmark gate, then refresh PR `#52` and return to review.

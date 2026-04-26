@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Issue `#51` implementation is complete locally through phase 7; next step is to push the current state to PR `#52` and resume review on the updated branch.
+Issue `#51` is blocked on two fresh review findings against PR `#52`; the next work is to fix those parity regressions, rerun validation, and only then return to review.
 
 ## Branch
 
@@ -151,7 +151,10 @@ Issue `#51` implementation is complete locally through phase 7; next step is to 
 - The current code has no built-in sync metrics surface, so the harness needs to instrument `gh` calls directly.
 - The benchmark outputs are local temp data, not checked-in artifacts.
 - The current phase-7 benchmark still improves wall time and `gh` call count materially while matching baseline active-task counts.
-- The phase-7 code/docs state is pushed on PR `#52` in commit `5cad32b`; the next work is PR refresh plus renewed review.
+- Fresh review found two blocking parity regressions:
+- org-backed planner sync can skip terminal verification for tracked authored PRs and issues in repos that currently have zero open discovered items
+- explicit-repo archive-state incompleteness can silently drop healthy repos from planner scope
+- The phase-7 code/docs state is pushed on PR `#52` through commit `81eef6a`, but the PR body/status now needs to reflect that it is blocked on those fixes rather than review-ready.
 
 ## Benchmark snapshot
 
@@ -177,13 +180,13 @@ Issue `#51` implementation is complete locally through phase 7; next step is to 
 
 ## Next actions
 
-1. Refresh the PR summary/commentary with the phase-7 rerun and the new benchmark budget gate.
-2. Resume review on the updated branch and only return to implementation if new findings appear.
-3. If review stays clean, treat issue `#51` implementation as complete and decide whether any follow-up cleanup belongs in a separate issue.
+1. Fix org-backed terminal verification scope for tracked authored PRs and issues in otherwise dormant repos, with regression coverage.
+2. Fix explicit-repo archive-state completeness handling so partial lookups suppress closes instead of silently dropping repos, with regression coverage.
+3. Rerun the focused test suite plus the live benchmark gate, then refresh PR `#52` and return to review.
 
 ## Drift from original plan
 
 - The previously identified phase-6 semantic drift has been resolved in code and regression coverage, and the parity rerun confirms the benchmark gate still holds.
 - Planning memory was missing from the repo and has now been added.
 - The repo memory had stale “checkpoint PR” language after PR `#52` was opened; `docs/plan.md`, `docs/status.md`, and `docs/handoff.md` now point at the active post-phase-4 state instead.
-- No known implementation drift remains against the issue-51 staged plan; phase 7 is complete locally and the remaining work is PR/update review flow.
+- Fresh renewed review found unapproved drift against the issue-51 staged plan, so the branch is no longer in “implementation complete” state until those fixes land.

@@ -76,3 +76,10 @@
 - Reason: Phase 7 is meant to stop repo fanout, per-review detail N+1, and unclassified `gh` traffic from creeping back in unnoticed; a failing compare mode makes that check repeatable.
 - Impact: Future live before/after comparisons can fail fast when a candidate adds `repo_graphql`, `review_detail_graphql`, `other`, or a higher total `gh` call count.
 - Plan change: no
+
+## 2026-04-26
+
+- Decision: Treat the fresh post-phase-7 review findings as blocking unapproved drift and return to code to fix them before calling issue `#51` complete.
+- Reason: The current branch still violates issue `#51` semantics in two places: org-backed terminal verification can miss tracked rows in dormant repos, and explicit-repo archive-state incompleteness can silently drop healthy repos from planner scope.
+- Impact: The active work shifts from “review/closeout” back to targeted parity fixes plus regression coverage and rerun validation.
+- Plan change: yes

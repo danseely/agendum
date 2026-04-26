@@ -2,13 +2,13 @@
 
 ## Active goal
 
-Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 7` are now complete locally. The active next work is to refresh PR `#52`, rerun review on the realigned branch, and only return to code if review finds new drift.
+Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 7` remain the intended implementation slices, but a fresh review found two blocking parity drifts that must be fixed before this branch can be treated as implementation-complete.
 
 ## Scope
 
-- Keep the phase-7 implementation aligned with the issue-51 constraints and benchmark shape.
-- Use PR `#52` plus the live benchmark harness as the review surface for final issue-51 validation.
-- Avoid new sync-surface work unless review uncovers a concrete problem.
+- Fix org-backed terminal verification for tracked authored PRs and issues in repos that currently have zero open discovered items.
+- Fix explicit-repo archived-repo filtering so archive-state incompleteness does not silently drop healthy repos from planner scope.
+- Preserve the current hot-path call shape and benchmark win while restoring issue-51 semantic parity.
 
 ## Constraints
 
@@ -27,7 +27,7 @@ Deliver issue `#51` in the staged order from the issue body. `phase 0` through `
 ## Non-goals for this slice
 
 - No semantic redesign of statuses or reconciliation.
-- No new sync-surface behavior beyond the completed phase-7 cleanup/hardening work unless review requires it.
+- No new sync-surface behavior beyond the review-driven parity fixes required to match issue `#51`.
 
 ## Current drift check
 
@@ -49,4 +49,7 @@ Deliver issue `#51` in the staged order from the issue body. `phase 0` through `
 - `src/agendum/syncer.py` no longer carries the legacy `_run_sync_once_legacy()` branch.
 - `scripts/compare_live_sync_bench.py` now has a `--fail-on-regression` budget gate that fails if a candidate run reintroduces `repo_graphql`, `review_detail_graphql`, `other`, or a higher total `gh` call count.
 - The phase-7 `adadaptedinc` rerun still materially beats `main`: cold `18.46s -> 6.24s`, warm `17.36s -> 6.36s`, and `12 -> 8` `gh` calls with active-task counts unchanged at `10`.
-- No unapproved drift is currently known against the issue-51 implementation plan; the next work is PR refresh plus renewed review, not more planned implementation.
+- Unapproved drift is now known against the issue-51 implementation plan:
+- Org-backed planner sync currently derives authored/issue verification scope only from repos with hydrated open items, so tracked rows in otherwise dormant repos can skip terminal verification and stay open forever.
+- Explicit-repo planner sync currently ignores archive-state completeness and can silently drop healthy repos from planner scope when archive-state lookup is partial.
+- The next work is to fix those two parity regressions, rerun the focused suite plus the live benchmark gate, and only then return to review.
