@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected lane attribution and realigned to the plan, pending a refreshed review pass.
+Issue `#51` / phase 7 cleanup and hardening after the completed phase-6 switch.
 
 ## Done
 
@@ -62,10 +62,13 @@ Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected la
 - Restored archived-repo suppression on the planner path by filtering org-backed hydrated items using `repository.isArchived` and batching explicit-repo archive-state lookup in `src/agendum/gh.py`.
 - Added archive-state coverage in `tests/test_gh.py` plus org/repo planner regression coverage in `tests/test_syncer_edge_cases.py`.
 - Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the label/archive fixes.
+- Reran the live phase-6 benchmark after the parity fixes and captured `/tmp/agendum-live-sync-bench-pr52-phase6-parity.json`.
+- Confirmed the parity branch still materially beats `main`: cold `18.46s -> 6.30s`, warm `17.36s -> 6.17s`, and `12 -> 8` `gh` calls.
+- Confirmed the parity rerun no longer shows the earlier `mulligan#1` semantic delta; cold and warm active-task counts both match the baseline at `10`.
 
 ## In progress
 
-- No code work is in progress; the branch is ready for a renewed review pass.
+- No code work is in progress; planning memory is being advanced from phase 6 to phase 7.
 
 ## Blocked
 
@@ -73,6 +76,6 @@ Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected la
 
 ## Next
 
-- Re-run the review pass against the realigned phase-6 branch.
-- Keep calling out `adadaptedinc/mulligan#1` as the only observed semantic delta versus `main`.
-- Decide whether the parity fixes justify a fresh live benchmark rerun before pushing the next PR update.
+- Remove legacy hot-path helpers that are no longer used by the planner path.
+- Tighten regression/budget assertions so repo fanout and per-review detail N+1 cannot return unnoticed.
+- Keep the next live benchmark rerun at or below the current parity-branch call shape and materially better than `main`.

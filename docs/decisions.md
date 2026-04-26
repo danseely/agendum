@@ -62,3 +62,10 @@
 - Reason: The initial phase-6 benchmark already showed the hot-path win, but lane attribution was misleading because the new open-search calls were falling through to `other`.
 - Impact: `scripts/live_sync_bench.py` now reports authored, assigned, and review-requested open-discovery traffic under stable lane names, and the PR benchmark summary can describe the before/after mix accurately.
 - Plan change: no
+
+## 2026-04-25
+
+- Decision: Treat phase 6 as complete and advance the active plan to phase 7 after the parity-fix benchmark rerun.
+- Reason: The rerun still materially beats `main`, preserves the reduced hot-path call shape, and no longer shows the earlier `mulligan#1` semantic delta versus baseline.
+- Impact: The active planning slice is now legacy hot-path cleanup and regression-budget hardening rather than more phase-6 parity work.
+- Plan change: yes

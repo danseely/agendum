@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Advance issue `#51` from the benchmarked phase-6 switch to a renewed review pass now that phase-6 semantic parity has been restored.
+Advance issue `#51` from the completed phase-6 switch to phase-7 cleanup and hardening.
 
 ## Branch
 
@@ -68,6 +68,9 @@ Advance issue `#51` from the benchmarked phase-6 switch to a renewed review pass
 - Restored planner-path archived-repo suppression by filtering org-backed hydrated items on `repository.isArchived` and batching explicit-repo archive-state lookup with `fetch_repo_archive_states_with_completeness()` in `src/agendum/gh.py`.
 - Added regression coverage for label parity and archived-repo suppression in `tests/test_gh.py` and `tests/test_syncer_edge_cases.py`.
 - Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the label/archive fixes.
+- Ran `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-phase6-parity.json`.
+- Ran `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6-parity.json`.
+- Confirmed the parity rerun still materially beats `main` and no longer shows the earlier `mulligan#1` active-task delta.
 
 ## Validation
 
@@ -137,8 +140,7 @@ Advance issue `#51` from the benchmarked phase-6 switch to a renewed review pass
 - The harness must measure real `gh` usage without mutating the user's live workspace.
 - The current code has no built-in sync metrics surface, so the harness needs to instrument `gh` calls directly.
 - The benchmark outputs are local temp data, not checked-in artifacts.
-- The phase-6 benchmark improves wall time and `gh` call count materially, but it also surfaces one extra active task versus `main`.
-- The only known semantic delta versus `main` is the extra active task `adadaptedinc/mulligan#1`, which looks like completeness improvement but should still be called out in review.
+- The phase-6 benchmark improves wall time and `gh` call count materially while matching baseline active-task counts on the parity rerun.
 
 ## Benchmark snapshot
 
@@ -156,17 +158,18 @@ Advance issue `#51` from the benchmarked phase-6 switch to a renewed review pass
 - `phase 5` comparison versus baseline: same `gh` calls, same payload bytes, same task counts and changes; wall time stayed within expected live-run noise (`-7.3%` cold, `-2.5%` warm).
 - Corrected `phase 6` comparison versus baseline: cold `6.42s` vs `18.46s` (`-65.2%`), warm `6.19s` vs `17.36s` (`-64.3%`), and `8` `gh` calls vs `12` (`-33.3%`) on both cold and warm runs.
 - `phase 6` payload bytes increased to `335908` (`+15.1%`) because the new open-search plus hydration shape trades fewer calls for somewhat larger batched responses.
-- `phase 6` surfaces `11` active tasks instead of `10`; the extra item is `adadaptedinc/mulligan#1` (`feat: initial logic of script`), which a fresh temp sync on `main` does not include.
 - The corrected call mix now shows `repo_graphql` and `review_detail_graphql` removed from the hot path, replaced by `search_open_*` plus `hydrate_open_*` lanes without any benchmark traffic falling into `other`.
+- Phase-6 parity rerun versus baseline: cold `6.30s` vs `18.46s` (`-65.9%`), warm `6.17s` vs `17.36s` (`-64.4%`), `8` `gh` calls vs `12` (`-33.3%`), and active-task counts matched baseline at `10` on both cold and warm runs.
+- Phase-6 parity payload bytes increased slightly again to `336314` (`+15.2%`), still within the same reduced-call batched-response tradeoff.
 
 ## Next actions
 
-1. Re-run the review pass against the realigned phase-6 branch.
-2. Decide whether to rerun the live benchmark after the parity fixes and restage the PR summary if needed.
-3. If review stays clean, move PR `#52` back toward review readiness.
+1. Remove legacy hot-path helpers that are no longer used by the planner path.
+2. Tighten regression/budget assertions so repo fanout and per-review detail N+1 cannot return unnoticed.
+3. Keep the next live benchmark rerun materially better than `main` while preserving the current phase-6 behavior.
 
 ## Drift from original plan
 
-- The previously identified phase-6 semantic drift has been resolved in code and regression coverage.
+- The previously identified phase-6 semantic drift has been resolved in code and regression coverage, and the parity rerun confirms the benchmark gate still holds.
 - Planning memory was missing from the repo and has now been added.
 - The repo memory had stale “checkpoint PR” language after PR `#52` was opened; `docs/plan.md`, `docs/status.md`, and `docs/handoff.md` now point at the active post-phase-4 state instead.
