@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Both fresh review findings against PR `#52` have been fixed in code and regression coverage. The remaining step before returning to review is the live `adadaptedinc` benchmark rerun plus a PR status refresh.
+Issue `#51` implementation, the post-phase-7 parity fixes, and a follow-up title-clobber fix surfaced by a second-pass review are all landed on `origin/codex/issue-51-sync-foundation`. The live `adadaptedinc` benchmark gate passed against a fresh `main` baseline. PR `#52` is awaiting review response.
 
 ## Done
 
@@ -81,19 +81,26 @@ Both fresh review findings against PR `#52` have been fixed in code and regressi
 - Added `test_run_sync_org_path_verifies_tracked_authored_in_dormant_in_scope_repo` to lock in Fix 1 (dormant in-scope tracked task gets verified and closed when terminal).
 - Added `test_run_sync_repo_path_keeps_unknown_archive_state_repo_in_scope` to lock in Fix 2 (partial archive lookup keeps healthy repos in scope and updates their tasks normally).
 - Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` (114 passed) and `uv run pytest` (276 passed) on the parity-fix branch.
+- Ran a second-pass review of PR `#52` against the parity-fix branch and found a title-clobber bug in the verified-terminal normalizers in `src/agendum/syncer.py`.
+- Spawned an independent `crew:reviewer` agent to verify the title-clobber finding; agent reproduced it empirically across `_normalize_verified_authored_task`, `_normalize_verified_issue_task`, and `_normalize_verified_review_task`.
+- Replaced `title=""` with `title=tracked.title or ""` in the three verified-terminal normalizers.
+- Updated the two planner-test fixture expectations that pinned the buggy `title=""` output (`test_build_sync_plan_authored_heavy_world`, `test_build_sync_plan_partial_failure_world`).
+- Added a `task["title"] == "Old PR"` assertion to `test_run_sync_marks_closed_authored_pr_closed`.
+- Added `test_run_sync_marks_closed_assigned_issue_closed` and `test_run_sync_marks_dropped_review_request_done` covering the issue and review-PR terminal verification paths.
+- Reran `uv run pytest tests/test_syncer.py tests/test_syncer_edge_cases.py` (53 passed) and `uv run pytest` (278 passed) on the title-fix branch.
+- Regenerated the live `main` baseline against `43cc532` at `/tmp/agendum-live-sync-bench-baseline.json`.
+- Captured the live title-fix candidate at `/tmp/agendum-live-sync-bench-pr52-titlefix.json`.
+- Confirmed `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-titlefix.json` exits cleanly.
+- Pushed the title-fix commit `e68ee25` to `origin/codex/issue-51-sync-foundation`.
 
 ## In progress
 
-- No code work is in progress; the parity fixes are landed locally and the PR is awaiting a live benchmark rerun and review-status refresh.
+- No code work is in progress; the title-fix commit is pushed and the PR is awaiting review response.
 
 ## Blocked
 
 - No repo-checked-in benchmark artifact exists; the baseline and subsequent slice runs live in local `/tmp` output only.
-- The local `/tmp/agendum-live-sync-bench-baseline.json` from the prior session is no longer present, so the next live benchmark rerun must regenerate the baseline from `main` before producing the candidate comparison.
 
 ## Next
 
-- Regenerate the live `main` baseline with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-baseline.json`.
-- Run the candidate from this branch with `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-parity.json`.
-- Confirm `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-parity.json` exits cleanly.
-- Push the parity-fix commit to `origin/codex/issue-51-sync-foundation`, refresh PR `#52` body with the latest comparison, and return to review.
+- Wait for review response on PR `#52`. If reviewer requests changes, re-enter the workflow. If approved, merge.

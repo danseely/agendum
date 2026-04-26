@@ -2,7 +2,7 @@
 
 ## Active goal
 
-Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 7` remain the intended implementation slices. The two blocking parity drifts surfaced during the latest review have now been fixed in code and unit-test coverage; the remaining work is a live benchmark rerun against `adadaptedinc` plus a PR-status refresh before returning to review.
+Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 7` are landed on `origin/codex/issue-51-sync-foundation`, the two post-phase-7 parity drifts are fixed, and a second-pass review uncovered a title-clobber bug in the verified-terminal normalizers which is also fixed and pushed. The live `adadaptedinc` benchmark gate passes against a fresh `main` baseline. Remaining work is review response on PR `#52`.
 
 ## Scope
 
@@ -53,4 +53,7 @@ Deliver issue `#51` in the staged order from the issue body. `phase 0` through `
 - Org-backed planner sync now derives `active_repos` from configured `scoped_orgs` membership of tracked tasks in addition to hydrated open items, so tracked authored/issue rows in dormant in-scope repos still flow through terminal verification.
 - Explicit-repo planner sync now drops only repos confirmed archived (`isArchived` is `True`); repos missing from a partial archive-state response stay in scope so a flaky lookup cannot silently remove healthy repos from the planner.
 - The focused unit suite (`tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py`) and the full repo suite both pass on the parity-fix branch.
-- The next work is a live `adadaptedinc` benchmark rerun plus the `scripts/compare_live_sync_bench.py --fail-on-regression` gate, and a PR `#52` status refresh before returning to review.
+- A second-pass review surfaced a title-clobber bug: the three verified-terminal normalizers in `src/agendum/syncer.py` built `NormalizedIncomingTask(title="")`, which `as_dict()` emitted unconditionally and `diff_tasks` then wrote through to the DB on the `to_update` path, clobbering the tracked title on closed authored PRs, closed assigned issues, and dropped review requests. An independent reviewer agent reproduced the bug across all three normalizers.
+- The fix passes `tracked.title` through the three normalizers, updates two planner-test fixture expectations that pinned the buggy `title=""` output, adds a title assertion to `test_run_sync_marks_closed_authored_pr_closed`, and adds two sibling regression tests covering the issue and review-PR terminal verification paths. Full pytest is `278 passed`.
+- The live title-fix rerun against a fresh `main` baseline (`43cc532`) still materially beats `main` (cold `19.24s -> 6.55s`, warm `19.15s -> 6.47s`, `12 -> 8` `gh` calls), and `scripts/compare_live_sync_bench.py --fail-on-regression` exits cleanly. Lane shape is unchanged because the title fix is pure normalization.
+- The title fix is pushed as commit `e68ee25` on `origin/codex/issue-51-sync-foundation`. PR `#52` is now awaiting review response.

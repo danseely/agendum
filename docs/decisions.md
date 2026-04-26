@@ -97,3 +97,10 @@
 - Reason: A partial archive-state lookup leaves some repos with no entry. The previous filter dropped those silently, removing healthy repos from planner scope and freezing their tracked tasks. Treating unknown repos as in-scope keeps them flowing through hydration and verification, and the existing per-lane completeness signals still cover real coverage gaps.
 - Impact: Flaky archive-state batches no longer silently shrink explicit-repo planner scope. No new close behavior: repos confirmed archived are still dropped exactly as before.
 - Plan change: no
+
+## 2026-04-26
+
+- Decision: Pass `tracked.title` through the three verified-terminal normalizers in `src/agendum/syncer.py` instead of building `NormalizedIncomingTask(title="")`.
+- Reason: A second-pass review against PR `#52` found that the verified-terminal path takes `diff_tasks`'s `to_update` branch (URL matches an existing row), and `as_dict()` only filters `None`-valued fields, so `title=""` was being persisted to the DB and clobbering the tracked title on closed authored PRs, closed assigned issues, and dropped review requests. An independent reviewer agent reproduced the bug across all three normalizers. `TrackedTaskRef` already carries the live title, so passing it through is a 3-line fix that matches the careful behavior already present in the parallel `to_create + terminal-status` branch of `_apply_sync_diff`.
+- Impact: Closed/merged/done verifications keep the row's existing title. Two planner-test fixture expectations were updated (they pinned the buggy `title=""` output), one existing close test gained a title assertion, and two sibling regression tests now cover the issue and review-PR terminal verification paths. The live `adadaptedinc` benchmark gate still passes (cold `19.24s -> 6.55s`, warm `19.15s -> 6.47s`, `12 -> 8` `gh` calls, lane shape unchanged).
+- Plan change: no

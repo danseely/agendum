@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Both fresh review findings against PR `#52` are now fixed in code with regression coverage and the unit suites pass. The remaining work is the live `adadaptedinc` benchmark rerun plus a PR-status refresh before returning to review.
+Issue `#51` implementation is fully landed on `origin/codex/issue-51-sync-foundation`, including the post-phase-7 parity fixes and a follow-up title-clobber fix from a second-pass review. The live `adadaptedinc` benchmark gate passes against a fresh `main` baseline. PR `#52` is now awaiting review response.
 
 ## Branch
 
@@ -81,6 +81,15 @@ Both fresh review findings against PR `#52` are now fixed in code with regressio
 - Ran `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-phase7.json`.
 - Ran `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase7.json`.
 - Confirmed the phase-7 rerun still materially beats `main`: cold `18.46s -> 6.24s`, warm `17.36s -> 6.36s`, and `12 -> 8` `gh` calls with active-task counts unchanged at `10`.
+- Ran a second-pass review of PR `#52` and identified a title-clobber bug: the three verified-terminal normalizers in `src/agendum/syncer.py` built `NormalizedIncomingTask(title="")`, which `as_dict()` emitted unconditionally and `diff_tasks` then wrote through to the DB on the `to_update` path.
+- Spawned an independent `crew:reviewer` agent which reproduced the bug across all three normalizers and confirmed the test gap.
+- Replaced `title=""` with `title=tracked.title or ""` in `_normalize_verified_authored_task`, `_normalize_verified_issue_task`, and `_normalize_verified_review_task`.
+- Updated the planner-test fixture expectations in `test_build_sync_plan_authored_heavy_world` and `test_build_sync_plan_partial_failure_world` to use the tracked titles instead of `""`.
+- Added a `task["title"]` assertion to `test_run_sync_marks_closed_authored_pr_closed` and added sibling regression tests `test_run_sync_marks_closed_assigned_issue_closed` and `test_run_sync_marks_dropped_review_request_done`.
+- Regenerated the live `main` baseline against `43cc532` at `/tmp/agendum-live-sync-bench-baseline.json`.
+- Captured the title-fix candidate at `/tmp/agendum-live-sync-bench-pr52-titlefix.json`.
+- Confirmed `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-titlefix.json` exits cleanly: cold `19.24s -> 6.55s`, warm `19.15s -> 6.47s`, `12 -> 8` `gh` calls, lane shape unchanged.
+- Pushed the title-fix commit `e68ee25` to `origin/codex/issue-51-sync-foundation`.
 
 ## Validation
 
@@ -123,6 +132,11 @@ Both fresh review findings against PR `#52` are now fixed in code with regressio
 - `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6.json`
 - `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py`
 - `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6.json`
+- `uv run pytest tests/test_syncer.py tests/test_syncer_edge_cases.py` (53 passed) on the title-fix branch
+- `uv run pytest` (278 passed) on the title-fix branch
+- `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-baseline.json` (against `main` `43cc532`)
+- `uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-titlefix.json`
+- `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-titlefix.json`
 
 ## Changed files
 
@@ -150,10 +164,7 @@ Both fresh review findings against PR `#52` are now fixed in code with regressio
 - The harness must measure real `gh` usage without mutating the user's live workspace.
 - The current code has no built-in sync metrics surface, so the harness needs to instrument `gh` calls directly.
 - The benchmark outputs are local temp data, not checked-in artifacts.
-- The current phase-7 benchmark still improves wall time and `gh` call count materially while matching baseline active-task counts.
-- Both fresh review findings are now fixed locally with regression coverage; the live benchmark rerun is the only remaining gate before returning to review.
-- The previous local baseline at `/tmp/agendum-live-sync-bench-baseline.json` is no longer present, so the next live rerun must regenerate the baseline from `main` before producing the candidate comparison.
-- The parity-fix commit is local only — PR `#52` still shows the blocked phase-7 state and needs a push plus body refresh once the live benchmark passes.
+- No outstanding code blockers: the title-fix commit is pushed, the live benchmark gate passes, and the test suite is green.
 
 ## Benchmark snapshot
 
@@ -176,17 +187,16 @@ Both fresh review findings against PR `#52` are now fixed in code with regressio
 - Phase-6 parity payload bytes increased slightly again to `336314` (`+15.2%`), still within the same reduced-call batched-response tradeoff.
 - Phase-7 rerun versus baseline: cold `6.24s` vs `18.46s` (`-66.2%`), warm `6.36s` vs `17.36s` (`-63.3%`), `8` `gh` calls vs `12` (`-33.3%`), and active-task counts still matched baseline at `10` on both cold and warm runs.
 - The phase-7 candidate keeps `repo_graphql`, `review_detail_graphql`, and `other` at `0`, and `scripts/compare_live_sync_bench.py --fail-on-regression` passes against the baseline.
+- Title-fix rerun versus a fresh `main` baseline (`43cc532`): cold `6.55s` vs `19.24s` (`-66.0%`), warm `6.47s` vs `19.15s` (`-66.2%`), `8` `gh` calls vs `12` (`-33.3%`), payload bytes `336314` vs `291919` (`+15.2%`), and active-task counts matched at `10` on both cold and warm runs. The title fix is pure normalization, so the lane shape is unchanged from the parity-fix run.
 
 ## Next actions
 
-1. Regenerate the live `main` baseline: `git switch main && uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-baseline.json`.
-2. Switch back and capture the candidate: `git switch codex/issue-51-sync-foundation && uv run python scripts/live_sync_bench.py --org adadaptedinc --runs 2 --output /tmp/agendum-live-sync-bench-pr52-parity.json`.
-3. Run the gate: `uv run python scripts/compare_live_sync_bench.py --fail-on-regression /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-parity.json`.
-4. Push the parity-fix commit to `origin/codex/issue-51-sync-foundation`, refresh PR `#52` body with the latest comparison, and return to review.
+1. Wait for review response on PR `#52`. If reviewer requests changes, re-enter the workflow. If approved, merge.
 
 ## Drift from original plan
 
 - The previously identified phase-6 semantic drift has been resolved in code and regression coverage, and the parity rerun confirms the benchmark gate still holds.
 - Planning memory was missing from the repo and has now been added.
 - The repo memory had stale “checkpoint PR” language after PR `#52` was opened; `docs/plan.md`, `docs/status.md`, and `docs/handoff.md` now point at the active post-phase-4 state instead.
-- The post-phase-7 review surfaced two parity regressions (org-backed terminal verification scope, explicit-repo archive-state incompleteness). Both are now resolved in code with regression coverage and a live benchmark rerun is queued; no further unapproved drift is open.
+- The post-phase-7 review surfaced two parity regressions (org-backed terminal verification scope, explicit-repo archive-state incompleteness). Both are now resolved in code with regression coverage and the live benchmark gate passes.
+- A second-pass review surfaced a title-clobber bug in the verified-terminal normalizers (independent of the issue-51 hot-path goals). It is resolved in commit `e68ee25` with regression coverage and the live benchmark gate still passes. No further unapproved drift is open.
