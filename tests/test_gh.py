@@ -11,8 +11,11 @@ from agendum.gh import (
     derive_authored_pr_status,
     derive_review_pr_status,
     derive_issue_status,
-    fetch_review_detail,
+    fetch_repo_archive_states_with_completeness,
     get_gh_config_dir,
+    hydrate_open_authored_prs,
+    hydrate_open_issues,
+    hydrate_open_review_prs,
     _run_gh,
     parse_author_first_name,
     extract_repo_short_name,
@@ -20,6 +23,9 @@ from agendum.gh import (
     seed_gh_config_dir,
     set_gh_config_dir,
     use_gh_config_dir,
+    verify_missing_authored_prs,
+    verify_missing_issues,
+    verify_missing_review_prs,
 )
 
 
@@ -582,23 +588,35 @@ def test_extract_repo_short_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_review_detail_uses_valid_author_name_query(monkeypatch) -> None:
+async def test_fetch_repo_archive_states_with_completeness_batches(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 
     async def fake_run_gh(*args: str) -> str:
         calls.append(args)
+        query_arg = next(arg for arg in args if arg.startswith("query="))
+        if "org-a" in query_arg and "repo-1" in query_arg:
+            return json.dumps(
+                {
+                    "data": {
+                        "repo_0": {
+                            "nameWithOwner": "org-a/repo-1",
+                            "isArchived": False,
+                        },
+                        "repo_1": {
+                            "nameWithOwner": "org-a/repo-2",
+                            "isArchived": True,
+                        },
+                    }
+                }
+            )
         return json.dumps(
             {
                 "data": {
-                    "repository": {
-                        "pullRequest": {
-                            "author": {
-                                "login": "reviewer",
-                                "name": "Review Person",
-                            },
-                        },
-                    },
-                },
+                    "repo_0": {
+                        "nameWithOwner": "org-b/repo-3",
+                        "isArchived": False,
+                    }
+                }
             }
         )
 
@@ -606,12 +624,346 @@ async def test_fetch_review_detail_uses_valid_author_name_query(monkeypatch) -> 
 
     monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
 
-    result = await fetch_review_detail("example-org", "example-repo", 34, "current-user")
+    states, complete = await fetch_repo_archive_states_with_completeness(
+        ["org-a/repo-1", "org-a/repo-2", "org-b/repo-3"],
+        batch_size=2,
+    )
 
-    assert result["data"]["repository"]["pullRequest"]["author"]["name"] == "Review Person"
-    call = calls[0]
-    query_arg = next(arg for arg in call if arg.startswith("query="))
-    assert "$user" not in query_arg
-    assert "-F" in call
-    assert "user=current-user" not in call
-    assert "... on User" in query_arg
+    assert complete is True
+    assert states == {
+        "org-a/repo-1": False,
+        "org-a/repo-2": True,
+        "org-b/repo-3": False,
+    }
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_hydrate_open_authored_prs_uses_lane_specific_minimal_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "nodes": [
+                        {
+                            "__typename": "PullRequest",
+                            "id": "PR_node_1",
+                            "number": 12,
+                            "title": "Improve sync",
+                            "url": "https://github.com/example-org/example-repo/pull/12",
+                            "state": "OPEN",
+                            "isDraft": False,
+                            "reviewDecision": "APPROVED",
+                            "repository": {
+                                "nameWithOwner": "example-org/example-repo",
+                                "isArchived": False,
+                            },
+                            "author": {"login": "author"},
+                            "labels": {"nodes": [{"name": "bug"}]},
+                            "reviewRequests": {"totalCount": 1},
+                            "commits": {"nodes": []},
+                            "reviews": {"nodes": []},
+                            "reviewThreads": {"nodes": []},
+                        }
+                    ]
+                }
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    hydrated = await hydrate_open_authored_prs([{"gh_node_id": "PR_node_1"}])
+
+    assert hydrated == [
+        {
+            "gh_node_id": "PR_node_1",
+            "number": 12,
+            "title": "Improve sync",
+            "url": "https://github.com/example-org/example-repo/pull/12",
+            "repository": {
+                "nameWithOwner": "example-org/example-repo",
+                "isArchived": False,
+            },
+            "state": "OPEN",
+            "isDraft": False,
+            "reviewDecision": "APPROVED",
+            "author": {"login": "author"},
+            "labels": {"nodes": [{"name": "bug"}]},
+            "reviewRequests": {"totalCount": 1},
+            "commits": {"nodes": []},
+            "reviews": {"nodes": []},
+            "reviewThreads": {"nodes": []},
+        }
+    ]
+    query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
+    assert "HydrateOpenAuthoredPRs" in query_arg
+    assert "reviewDecision" in query_arg
+    assert "reviewThreads" in query_arg
+    assert "timelineItems" not in query_arg
+    assert "labels" in query_arg
+    assert "isArchived" in query_arg
+    assert "mergedPRs" not in query_arg
+
+
+@pytest.mark.asyncio
+async def test_hydrate_open_review_prs_uses_lane_specific_minimal_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "nodes": [
+                        {
+                            "__typename": "PullRequest",
+                            "id": "PR_review_1",
+                            "number": 24,
+                            "title": "Review this",
+                            "url": "https://github.com/example-org/example-repo/pull/24",
+                            "repository": {
+                                "nameWithOwner": "example-org/example-repo",
+                                "isArchived": False,
+                            },
+                            "author": {"login": "author", "name": "Author Name"},
+                            "commits": {"nodes": []},
+                            "reviews": {"nodes": []},
+                            "timelineItems": {"nodes": []},
+                        }
+                    ]
+                }
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    hydrated = await hydrate_open_review_prs([{"gh_node_id": "PR_review_1"}])
+
+    assert hydrated == [
+        {
+            "gh_node_id": "PR_review_1",
+            "number": 24,
+            "title": "Review this",
+            "url": "https://github.com/example-org/example-repo/pull/24",
+            "repository": {
+                "nameWithOwner": "example-org/example-repo",
+                "isArchived": False,
+            },
+            "author": {"login": "author", "name": "Author Name"},
+            "commits": {"nodes": []},
+            "reviews": {"nodes": []},
+            "timelineItems": {"nodes": []},
+        }
+    ]
+    query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
+    assert "HydrateOpenReviewPRs" in query_arg
+    assert "timelineItems" in query_arg
+    assert "reviewDecision" not in query_arg
+    assert "reviewThreads" not in query_arg
+    assert "labels" not in query_arg
+    assert "isArchived" in query_arg
+
+
+@pytest.mark.asyncio
+async def test_hydrate_open_issues_uses_lane_specific_minimal_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "nodes": [
+                        {
+                            "__typename": "Issue",
+                            "id": "I_node_1",
+                            "number": 7,
+                            "title": "Assigned issue",
+                            "url": "https://github.com/example-org/example-repo/issues/7",
+                            "state": "OPEN",
+                            "repository": {
+                                "nameWithOwner": "example-org/example-repo",
+                                "isArchived": False,
+                            },
+                            "labels": {"nodes": [{"name": "ops"}]},
+                            "timelineItems": {"nodes": []},
+                        }
+                    ]
+                }
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    hydrated = await hydrate_open_issues([{"gh_node_id": "I_node_1"}])
+
+    assert hydrated == [
+        {
+            "gh_node_id": "I_node_1",
+            "number": 7,
+            "title": "Assigned issue",
+            "url": "https://github.com/example-org/example-repo/issues/7",
+            "repository": {
+                "nameWithOwner": "example-org/example-repo",
+                "isArchived": False,
+            },
+            "state": "OPEN",
+            "labels": {"nodes": [{"name": "ops"}]},
+            "timelineItems": {"nodes": []},
+        }
+    ]
+    query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
+    assert "HydrateOpenIssues" in query_arg
+    assert "timelineItems" in query_arg
+    assert "labels" in query_arg
+    assert "isArchived" in query_arg
+    assert "reviewDecision" not in query_arg
+    assert "reviews" not in query_arg
+    assert "commits" not in query_arg
+
+
+@pytest.mark.asyncio
+async def test_verify_missing_authored_prs_uses_lane_specific_minimal_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "nodes": [
+                        {
+                            "__typename": "PullRequest",
+                            "id": "PR_node_1",
+                            "url": "https://github.com/example-org/example-repo/pull/12",
+                            "state": "MERGED",
+                        }
+                    ]
+                }
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    verified = await verify_missing_authored_prs([{"gh_node_id": "PR_node_1"}])
+
+    assert verified == [
+        {
+            "gh_node_id": "PR_node_1",
+            "gh_url": "https://github.com/example-org/example-repo/pull/12",
+            "state": "MERGED",
+        }
+    ]
+    query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
+    assert "VerifyMissingAuthoredPRs" in query_arg
+    assert "state" in query_arg
+    assert "reviewDecision" not in query_arg
+    assert "reviewRequests" not in query_arg
+    assert "timelineItems" not in query_arg
+
+
+@pytest.mark.asyncio
+async def test_verify_missing_issues_uses_lane_specific_minimal_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "nodes": [
+                        {
+                            "__typename": "Issue",
+                            "id": "I_node_1",
+                            "url": "https://github.com/example-org/example-repo/issues/7",
+                            "state": "OPEN",
+                            "assignees": {"nodes": [{"login": "current-user"}]},
+                        }
+                    ]
+                }
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    verified = await verify_missing_issues(
+        [{"gh_node_id": "I_node_1"}],
+        gh_user="current-user",
+    )
+
+    assert verified == [
+        {
+            "gh_node_id": "I_node_1",
+            "gh_url": "https://github.com/example-org/example-repo/issues/7",
+            "state": "OPEN",
+            "is_assigned_to_user": True,
+        }
+    ]
+    query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
+    assert "VerifyMissingIssues" in query_arg
+    assert "assignees" in query_arg
+    assert "reviewRequests" not in query_arg
+    assert "timelineItems" not in query_arg
+
+
+@pytest.mark.asyncio
+async def test_verify_missing_review_prs_uses_lane_specific_minimal_query(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        return json.dumps(
+            {
+                "data": {
+                    "nodes": [
+                        {
+                            "__typename": "PullRequest",
+                            "id": "PR_review_1",
+                            "url": "https://github.com/example-org/example-repo/pull/24",
+                            "state": "OPEN",
+                            "reviewRequests": {
+                                "nodes": [
+                                    {"requestedReviewer": {"login": "current-user"}},
+                                ]
+                            },
+                        }
+                    ]
+                }
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    verified = await verify_missing_review_prs(
+        [{"gh_node_id": "PR_review_1"}],
+        gh_user="current-user",
+    )
+
+    assert verified == [
+        {
+            "gh_node_id": "PR_review_1",
+            "gh_url": "https://github.com/example-org/example-repo/pull/24",
+            "state": "OPEN",
+            "is_review_requested": True,
+        }
+    ]
+    query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
+    assert "VerifyMissingReviewPRs" in query_arg
+    assert "reviewRequests" in query_arg
+    assert "reviewDecision" not in query_arg
+    assert "timelineItems" not in query_arg
