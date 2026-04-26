@@ -2,7 +2,7 @@
 
 ## Active goal
 
-Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 5` are complete locally. `phase 6` is functionally switched for both org-backed and explicit-repo configs, the live benchmark gate is complete, and the remaining work is PR cleanup plus review readiness.
+Deliver issue `#51` in the staged order from the issue body. `phase 0` through `phase 5` are complete locally. `phase 6` is functionally switched for both org-backed and explicit-repo configs, the live benchmark gate is complete, and the remaining work is confirming the now-realigned branch with a fresh review pass before review readiness.
 
 ## Scope
 
@@ -43,3 +43,4 @@ Deliver issue `#51` in the staged order from the issue body. `phase 0` through `
 - `src/agendum/syncer.py` no longer marks tasks unseen for metadata-only updates such as `gh_node_id` backfill.
 - `scripts/live_sync_bench.py` now classifies the phase-6 `gh api search/issues` open-discovery calls into their real lane names instead of lumping them into `other`.
 - The corrected `adadaptedinc` phase-6 rerun still materially beats `main` on wall time and `gh` call count while surfacing the same `mulligan#1` completeness delta.
+- The planner path now preserves the main semantic constraints called out during review: out-of-scope existing authored/issue rows stay protected by planner fetched-scope gating, authored/issue labels still map into `tags`, and archived repos are suppressed on both org-backed and explicit-repo planner paths.

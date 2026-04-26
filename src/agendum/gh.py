@@ -25,6 +25,7 @@ _TASK_GH_CONFIG_DIR: ContextVar[Path | None | object] = ContextVar(
 )
 _SEARCH_PAGE_SIZE = 100
 _SEARCH_REPO_CHUNK_SIZE = 10
+_REPO_ARCHIVE_BATCH_SIZE = 20
 _HYDRATE_BATCH_SIZE = 50
 _VERIFY_BATCH_SIZE = 50
 _GITHUB_TASK_URL_RE = re.compile(
@@ -836,6 +837,48 @@ async def search_open_review_requested_prs_for_repos_with_completeness(
     return results, complete
 
 
+def _graphql_repo_string_literal(value: str) -> str:
+    return json.dumps(value)
+
+
+def _build_repo_archive_states_query(repos: list[str]) -> str:
+    lines = ["query FetchRepoArchiveStates {"]
+    for index, repo_full in enumerate(repos):
+        owner, name = repo_full.split("/", 1)
+        lines.append(
+            f"  repo_{index}: repository(owner: {_graphql_repo_string_literal(owner)}, "
+            f"name: {_graphql_repo_string_literal(name)}) {{"
+        )
+        lines.append("    nameWithOwner")
+        lines.append("    isArchived")
+        lines.append("  }")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+async def fetch_repo_archive_states_with_completeness(
+    repos: list[str],
+    *,
+    batch_size: int = _REPO_ARCHIVE_BATCH_SIZE,
+) -> tuple[dict[str, bool], bool]:
+    states: dict[str, bool] = {}
+    complete = True
+    for batch in _chunked(repos, batch_size):
+        data, batch_complete = await _run_graphql_query_with_success(
+            _build_repo_archive_states_query(batch)
+        )
+        complete = complete and batch_complete
+        for value in data.values():
+            if not isinstance(value, dict):
+                continue
+            repo_full = value.get("nameWithOwner")
+            is_archived = value.get("isArchived")
+            if isinstance(repo_full, str) and isinstance(is_archived, bool):
+                states[repo_full] = is_archived
+    complete = complete and len(states) == len(set(repos))
+    return states, complete
+
+
 def _normalize_hydrated_authored_pr(node: dict[str, Any]) -> dict[str, Any] | None:
     if node.get("__typename") != "PullRequest":
         return None
@@ -850,11 +893,15 @@ def _normalize_hydrated_authored_pr(node: dict[str, Any]) -> dict[str, Any] | No
         "number": number,
         "title": node.get("title", ""),
         "url": url,
-        "repository": {"nameWithOwner": repo_name},
+        "repository": {
+            "nameWithOwner": repo_name,
+            "isArchived": bool((node.get("repository") or {}).get("isArchived", False)),
+        },
         "state": node.get("state"),
         "isDraft": node.get("isDraft", False),
         "reviewDecision": node.get("reviewDecision"),
         "author": node.get("author") or {},
+        "labels": node.get("labels") or {"nodes": []},
         "reviewRequests": node.get("reviewRequests") or {"totalCount": 0},
         "commits": node.get("commits") or {"nodes": []},
         "reviews": node.get("reviews") or {"nodes": []},
@@ -876,7 +923,10 @@ def _normalize_hydrated_review_pr(node: dict[str, Any]) -> dict[str, Any] | None
         "number": number,
         "title": node.get("title", ""),
         "url": url,
-        "repository": {"nameWithOwner": repo_name},
+        "repository": {
+            "nameWithOwner": repo_name,
+            "isArchived": bool((node.get("repository") or {}).get("isArchived", False)),
+        },
         "author": node.get("author") or {},
         "commits": node.get("commits") or {"nodes": []},
         "reviews": node.get("reviews") or {"nodes": []},
@@ -898,8 +948,12 @@ def _normalize_hydrated_issue(node: dict[str, Any]) -> dict[str, Any] | None:
         "number": number,
         "title": node.get("title", ""),
         "url": url,
-        "repository": {"nameWithOwner": repo_name},
+        "repository": {
+            "nameWithOwner": repo_name,
+            "isArchived": bool((node.get("repository") or {}).get("isArchived", False)),
+        },
         "state": node.get("state"),
+        "labels": node.get("labels") or {"nodes": []},
         "timelineItems": node.get("timelineItems") or {"nodes": []},
     }
 
@@ -971,9 +1025,15 @@ query HydrateOpenAuthoredPRs {{
       reviewDecision
       repository {{
         nameWithOwner
+        isArchived
       }}
       author {{
         login
+      }}
+      labels(first: 10) {{
+        nodes {{
+          name
+        }}
       }}
       reviewRequests(first: 10) {{
         totalCount
@@ -1029,6 +1089,7 @@ query HydrateOpenReviewPRs {{
       url
       repository {{
         nameWithOwner
+        isArchived
       }}
       author {{
         login
@@ -1083,6 +1144,12 @@ query HydrateOpenIssues {{
       state
       repository {{
         nameWithOwner
+        isArchived
+      }}
+      labels(first: 10) {{
+        nodes {{
+          name
+        }}
       }}
       timelineItems(last: 20, itemTypes: [CONNECTED_EVENT, CROSS_REFERENCED_EVENT]) {{
         nodes {{

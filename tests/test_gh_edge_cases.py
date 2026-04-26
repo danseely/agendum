@@ -412,7 +412,10 @@ async def test_hydrate_open_authored_prs_batches_explicitly_and_preserves_order(
                             "state": "OPEN",
                             "isDraft": False,
                             "reviewDecision": None,
-                            "repository": {"nameWithOwner": "org/repo"},
+                            "repository": {
+                                "nameWithOwner": "org/repo",
+                                "isArchived": False,
+                            },
                             "author": {"login": "author"},
                             "reviewRequests": {"totalCount": 0},
                             "commits": {"nodes": []},
@@ -458,7 +461,10 @@ async def test_hydrate_open_issues_skips_non_issue_nodes(monkeypatch) -> None:
                             "title": "Tracked issue",
                             "url": "https://github.com/org/repo/issues/1",
                             "state": "OPEN",
-                            "repository": {"nameWithOwner": "org/repo"},
+                            "repository": {
+                                "nameWithOwner": "org/repo",
+                                "isArchived": False,
+                            },
                             "timelineItems": {"nodes": []},
                         },
                         {
@@ -491,8 +497,9 @@ async def test_hydrate_open_issues_skips_non_issue_nodes(monkeypatch) -> None:
             "number": 1,
             "title": "Tracked issue",
             "url": "https://github.com/org/repo/issues/1",
-            "repository": {"nameWithOwner": "org/repo"},
+            "repository": {"nameWithOwner": "org/repo", "isArchived": False},
             "state": "OPEN",
+            "labels": {"nodes": []},
             "timelineItems": {"nodes": []},
         }
     ]

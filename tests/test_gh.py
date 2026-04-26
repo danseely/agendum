@@ -11,6 +11,7 @@ from agendum.gh import (
     derive_authored_pr_status,
     derive_review_pr_status,
     derive_issue_status,
+    fetch_repo_archive_states_with_completeness,
     fetch_review_detail,
     get_gh_config_dir,
     hydrate_open_authored_prs,
@@ -624,6 +625,57 @@ async def test_fetch_review_detail_uses_valid_author_name_query(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_fetch_repo_archive_states_with_completeness_batches(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_gh(*args: str) -> str:
+        calls.append(args)
+        query_arg = next(arg for arg in args if arg.startswith("query="))
+        if "org-a" in query_arg and "repo-1" in query_arg:
+            return json.dumps(
+                {
+                    "data": {
+                        "repo_0": {
+                            "nameWithOwner": "org-a/repo-1",
+                            "isArchived": False,
+                        },
+                        "repo_1": {
+                            "nameWithOwner": "org-a/repo-2",
+                            "isArchived": True,
+                        },
+                    }
+                }
+            )
+        return json.dumps(
+            {
+                "data": {
+                    "repo_0": {
+                        "nameWithOwner": "org-b/repo-3",
+                        "isArchived": False,
+                    }
+                }
+            }
+        )
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "_run_gh", fake_run_gh)
+
+    states, complete = await fetch_repo_archive_states_with_completeness(
+        ["org-a/repo-1", "org-a/repo-2", "org-b/repo-3"],
+        batch_size=2,
+    )
+
+    assert complete is True
+    assert states == {
+        "org-a/repo-1": False,
+        "org-a/repo-2": True,
+        "org-b/repo-3": False,
+    }
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_hydrate_open_authored_prs_uses_lane_specific_minimal_query(monkeypatch) -> None:
     calls: list[tuple[str, ...]] = []
 
@@ -642,8 +694,12 @@ async def test_hydrate_open_authored_prs_uses_lane_specific_minimal_query(monkey
                             "state": "OPEN",
                             "isDraft": False,
                             "reviewDecision": "APPROVED",
-                            "repository": {"nameWithOwner": "example-org/example-repo"},
+                            "repository": {
+                                "nameWithOwner": "example-org/example-repo",
+                                "isArchived": False,
+                            },
                             "author": {"login": "author"},
+                            "labels": {"nodes": [{"name": "bug"}]},
                             "reviewRequests": {"totalCount": 1},
                             "commits": {"nodes": []},
                             "reviews": {"nodes": []},
@@ -666,11 +722,15 @@ async def test_hydrate_open_authored_prs_uses_lane_specific_minimal_query(monkey
             "number": 12,
             "title": "Improve sync",
             "url": "https://github.com/example-org/example-repo/pull/12",
-            "repository": {"nameWithOwner": "example-org/example-repo"},
+            "repository": {
+                "nameWithOwner": "example-org/example-repo",
+                "isArchived": False,
+            },
             "state": "OPEN",
             "isDraft": False,
             "reviewDecision": "APPROVED",
             "author": {"login": "author"},
+            "labels": {"nodes": [{"name": "bug"}]},
             "reviewRequests": {"totalCount": 1},
             "commits": {"nodes": []},
             "reviews": {"nodes": []},
@@ -682,7 +742,8 @@ async def test_hydrate_open_authored_prs_uses_lane_specific_minimal_query(monkey
     assert "reviewDecision" in query_arg
     assert "reviewThreads" in query_arg
     assert "timelineItems" not in query_arg
-    assert "labels" not in query_arg
+    assert "labels" in query_arg
+    assert "isArchived" in query_arg
     assert "mergedPRs" not in query_arg
 
 
@@ -702,7 +763,10 @@ async def test_hydrate_open_review_prs_uses_lane_specific_minimal_query(monkeypa
                             "number": 24,
                             "title": "Review this",
                             "url": "https://github.com/example-org/example-repo/pull/24",
-                            "repository": {"nameWithOwner": "example-org/example-repo"},
+                            "repository": {
+                                "nameWithOwner": "example-org/example-repo",
+                                "isArchived": False,
+                            },
                             "author": {"login": "author", "name": "Author Name"},
                             "commits": {"nodes": []},
                             "reviews": {"nodes": []},
@@ -725,7 +789,10 @@ async def test_hydrate_open_review_prs_uses_lane_specific_minimal_query(monkeypa
             "number": 24,
             "title": "Review this",
             "url": "https://github.com/example-org/example-repo/pull/24",
-            "repository": {"nameWithOwner": "example-org/example-repo"},
+            "repository": {
+                "nameWithOwner": "example-org/example-repo",
+                "isArchived": False,
+            },
             "author": {"login": "author", "name": "Author Name"},
             "commits": {"nodes": []},
             "reviews": {"nodes": []},
@@ -738,6 +805,7 @@ async def test_hydrate_open_review_prs_uses_lane_specific_minimal_query(monkeypa
     assert "reviewDecision" not in query_arg
     assert "reviewThreads" not in query_arg
     assert "labels" not in query_arg
+    assert "isArchived" in query_arg
 
 
 @pytest.mark.asyncio
@@ -757,7 +825,11 @@ async def test_hydrate_open_issues_uses_lane_specific_minimal_query(monkeypatch)
                             "title": "Assigned issue",
                             "url": "https://github.com/example-org/example-repo/issues/7",
                             "state": "OPEN",
-                            "repository": {"nameWithOwner": "example-org/example-repo"},
+                            "repository": {
+                                "nameWithOwner": "example-org/example-repo",
+                                "isArchived": False,
+                            },
+                            "labels": {"nodes": [{"name": "ops"}]},
                             "timelineItems": {"nodes": []},
                         }
                     ]
@@ -777,14 +849,20 @@ async def test_hydrate_open_issues_uses_lane_specific_minimal_query(monkeypatch)
             "number": 7,
             "title": "Assigned issue",
             "url": "https://github.com/example-org/example-repo/issues/7",
-            "repository": {"nameWithOwner": "example-org/example-repo"},
+            "repository": {
+                "nameWithOwner": "example-org/example-repo",
+                "isArchived": False,
+            },
             "state": "OPEN",
+            "labels": {"nodes": [{"name": "ops"}]},
             "timelineItems": {"nodes": []},
         }
     ]
     query_arg = next(arg for arg in calls[0] if arg.startswith("query="))
     assert "HydrateOpenIssues" in query_arg
     assert "timelineItems" in query_arg
+    assert "labels" in query_arg
+    assert "isArchived" in query_arg
     assert "reviewDecision" not in query_arg
     assert "reviews" not in query_arg
     assert "commits" not in query_arg

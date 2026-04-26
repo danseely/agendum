@@ -10,6 +10,7 @@ from agendum.syncer import CloseSuppression, diff_tasks, run_sync
 from tests.syncer_test_helpers import (
     install_repo_planner_mocks,
     make_open_authored_hydrated_pr,
+    make_open_issue_hydrated,
 )
 
 
@@ -400,6 +401,278 @@ async def test_run_sync_org_path_backfills_node_id(
     assert task is not None
     assert task["status"] == "approved"
     assert task["gh_node_id"] == "PR_node_15"
+
+
+async def test_run_sync_org_path_preserves_out_of_scope_authored_tasks(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/org/other-repo/pull/20"
+    add_task(
+        tmp_db,
+        title="Out of scope authored PR",
+        source="pr_authored",
+        status="open",
+        gh_url=url,
+        gh_repo="org/other-repo",
+        gh_number=20,
+    )
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_empty_search(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_empty_hydrate(items, *, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_verify_missing_authored(prs, *, batch_size=50) -> tuple[list, bool]:
+        assert prs == []
+        return [], True
+
+    async def fake_empty_verify_issues(issues, *, gh_user, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_empty_verify_review(prs, *, gh_user, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_fetch_notifications(gh_user) -> list:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(gh, "search_open_authored_prs_with_completeness", fake_empty_search)
+    monkeypatch.setattr(gh, "search_open_assigned_issues_with_completeness", fake_empty_search)
+    monkeypatch.setattr(gh, "search_open_review_requested_prs_with_completeness", fake_empty_search)
+    monkeypatch.setattr(gh, "hydrate_open_authored_prs_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "hydrate_open_issues_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "hydrate_open_review_prs_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "verify_missing_authored_prs_with_completeness", fake_verify_missing_authored)
+    monkeypatch.setattr(gh, "verify_missing_issues_with_completeness", fake_empty_verify_issues)
+    monkeypatch.setattr(gh, "verify_missing_review_prs_with_completeness", fake_empty_verify_review)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["org"]))
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 0
+    assert attention is False
+    assert error is None
+    assert task is not None
+    assert task["status"] == "open"
+
+
+async def test_run_sync_authored_pr_preserves_label_tags(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/pull/30"
+    add_task(
+        tmp_db,
+        title="Tagged authored PR",
+        source="pr_authored",
+        status="open",
+        gh_url=url,
+        gh_repo="org/repo",
+        gh_number=30,
+    )
+
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        authored_prs=[
+            make_open_authored_hydrated_pr(
+                gh_user="author",
+                url=url,
+                repo_full="org/repo",
+                gh_node_id="PR_node_30",
+                number=30,
+                title="Tagged authored PR",
+                labels=["bug", "ops"],
+            )
+        ],
+        expected_repos=["org/repo"],
+    )
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(repos=["org/repo"]))
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert attention is False
+    assert error is None
+    assert task is not None
+    assert task["tags"] == '["bug", "ops"]'
+
+
+async def test_run_sync_issue_preserves_label_tags(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/issues/31"
+    add_task(
+        tmp_db,
+        title="Tagged issue",
+        source="issue",
+        status="open",
+        gh_url=url,
+        gh_repo="org/repo",
+        gh_number=31,
+    )
+
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        issues=[
+            make_open_issue_hydrated(
+                url=url,
+                repo_full="org/repo",
+                gh_node_id="I_node_31",
+                number=31,
+                title="Tagged issue",
+                labels=["backend"],
+            )
+        ],
+        expected_repos=["org/repo"],
+    )
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(repos=["org/repo"]))
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 1
+    assert attention is False
+    assert error is None
+    assert task is not None
+    assert task["tags"] == '["backend"]'
+
+
+async def test_run_sync_org_path_skips_archived_repo_items(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+
+    async def fake_get_gh_username() -> str:
+        return "author"
+
+    async def fake_search_open_authored_prs_with_completeness(orgs, gh_user) -> tuple[list, bool]:
+        return [
+            {
+                "gh_node_id": "PR_archived",
+                "number": 40,
+                "title": "Archived PR",
+                "url": "https://github.com/org/archived-repo/pull/40",
+                "repository": {"nameWithOwner": "org/archived-repo"},
+            }
+        ], True
+
+    async def fake_empty_search(orgs, gh_user) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_hydrate_open_authored_prs_with_completeness(prs, *, batch_size=50) -> tuple[list, bool]:
+        return [
+            {
+                "gh_node_id": "PR_archived",
+                "number": 40,
+                "title": "Archived PR",
+                "url": "https://github.com/org/archived-repo/pull/40",
+                "repository": {
+                    "nameWithOwner": "org/archived-repo",
+                    "isArchived": True,
+                },
+                "state": "OPEN",
+                "isDraft": False,
+                "reviewDecision": None,
+                "author": {"login": "author"},
+                "labels": {"nodes": []},
+                "reviewRequests": {"totalCount": 0},
+                "commits": {"nodes": []},
+                "reviews": {"nodes": []},
+                "reviewThreads": {"nodes": []},
+            }
+        ], True
+
+    async def fake_empty_hydrate(items, *, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_empty_verify_authored(prs, *, batch_size=50) -> tuple[list, bool]:
+        assert prs == []
+        return [], True
+
+    async def fake_empty_verify_issues(issues, *, gh_user, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_empty_verify_review(prs, *, gh_user, batch_size=50) -> tuple[list, bool]:
+        return [], True
+
+    async def fake_fetch_notifications(gh_user) -> list:
+        return []
+
+    from agendum import gh
+
+    monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
+    monkeypatch.setattr(
+        gh,
+        "search_open_authored_prs_with_completeness",
+        fake_search_open_authored_prs_with_completeness,
+    )
+    monkeypatch.setattr(gh, "search_open_assigned_issues_with_completeness", fake_empty_search)
+    monkeypatch.setattr(gh, "search_open_review_requested_prs_with_completeness", fake_empty_search)
+    monkeypatch.setattr(
+        gh,
+        "hydrate_open_authored_prs_with_completeness",
+        fake_hydrate_open_authored_prs_with_completeness,
+    )
+    monkeypatch.setattr(gh, "hydrate_open_issues_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "hydrate_open_review_prs_with_completeness", fake_empty_hydrate)
+    monkeypatch.setattr(gh, "verify_missing_authored_prs_with_completeness", fake_empty_verify_authored)
+    monkeypatch.setattr(gh, "verify_missing_issues_with_completeness", fake_empty_verify_issues)
+    monkeypatch.setattr(gh, "verify_missing_review_prs_with_completeness", fake_empty_verify_review)
+    monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(orgs=["org"]))
+
+    assert changes == 0
+    assert attention is False
+    assert error is None
+    assert get_active_tasks(tmp_db) == []
+
+
+async def test_run_sync_repo_path_preserves_tasks_for_archived_repos(
+    tmp_db: Path,
+    monkeypatch,
+) -> None:
+    init_db(tmp_db)
+    url = "https://github.com/org/repo/pull/41"
+    add_task(
+        tmp_db,
+        title="Archived repo task",
+        source="pr_authored",
+        status="open",
+        gh_url=url,
+        gh_repo="org/repo",
+        gh_number=41,
+    )
+
+    install_repo_planner_mocks(
+        monkeypatch,
+        gh_user="author",
+        expected_repos=["org/repo"],
+        archived_repos={"org/repo"},
+    )
+
+    changes, attention, error = await run_sync(tmp_db, AgendumConfig(repos=["org/repo"]))
+
+    task = find_task_by_gh_url(tmp_db, url)
+    assert changes == 0
+    assert attention is False
+    assert error is None
+    assert task is not None
+    assert task["status"] == "open"
 
 
 async def test_run_sync_preserves_tasks_when_repo_fetch_fails(

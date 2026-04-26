@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected lane attribution, and being cleaned up for review.
+Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected lane attribution and realigned to the plan, pending a refreshed review pass.
 
 ## Done
 
@@ -53,10 +53,19 @@ Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected la
 - Reran the local phase-6 comparison after the classifier fix and confirmed the same hot-path win with corrected lane totals.
 - Updated PR `#52` title/body so it describes the production switch instead of groundwork and includes the corrected benchmark summary.
 - Added a superseding PR `#52` benchmark comment with the corrected lane attribution and current numbers.
+- Pushed the full local phase-6 branch state to `origin/codex/issue-51-sync-foundation` in commit `e08115f`.
+- Ran an independent review pass against `pr 52` and verified the reported findings locally.
+- Restored planner-path fetched-scope parity for authored and issue rows by limiting missing verification to active repos and passing planner fetched scope into `diff_tasks()` in `src/agendum/syncer.py`.
+- Added org-path regression coverage proving out-of-scope existing authored rows are preserved in `tests/test_syncer_edge_cases.py`.
+- Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the scope fix.
+- Restored planner-path label-to-`tags` propagation for authored PRs and issues in `src/agendum/gh.py` and `src/agendum/syncer.py`, with regression coverage in `tests/test_syncer_edge_cases.py`.
+- Restored archived-repo suppression on the planner path by filtering org-backed hydrated items using `repository.isArchived` and batching explicit-repo archive-state lookup in `src/agendum/gh.py`.
+- Added archive-state coverage in `tests/test_gh.py` plus org/repo planner regression coverage in `tests/test_syncer_edge_cases.py`.
+- Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the label/archive fixes.
 
 ## In progress
 
-- No code work is in progress; the branch is at review-packaging status.
+- No code work is in progress; the branch is ready for a renewed review pass.
 
 ## Blocked
 
@@ -64,5 +73,6 @@ Issue `#51` / phase 6 production sync-path switch, benchmarked with corrected la
 
 ## Next
 
+- Re-run the review pass against the realigned phase-6 branch.
 - Keep calling out `adadaptedinc/mulligan#1` as the only observed semantic delta versus `main`.
-- Move PR `#52` toward review from the current benchmarked branch state.
+- Decide whether the parity fixes justify a fresh live benchmark rerun before pushing the next PR update.

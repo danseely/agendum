@@ -703,6 +703,17 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
             return "author\n"
         if args[:2] == ("api", "search/issues"):
             return json.dumps({"items": []})
+        if args[:2] == ("api", "graphql"):
+            return json.dumps(
+                {
+                    "data": {
+                        "repo_0": {
+                            "nameWithOwner": "example-org/example-repo",
+                            "isArchived": False,
+                        }
+                    }
+                }
+            )
         if args[:2] == ("api", "notifications"):
             return "[]"
         raise AssertionError(f"Unexpected gh call: {args}")
@@ -722,6 +733,7 @@ async def test_run_sync_keeps_workspace_gh_config_dir_when_global_changes(
     assert attention is False
     assert error is None
     assert observed_gh_dirs == [
+        workspace_gh_dir,
         workspace_gh_dir,
         workspace_gh_dir,
         workspace_gh_dir,

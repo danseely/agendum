@@ -28,6 +28,7 @@ def make_open_authored_hydrated_pr(
     is_draft: bool = False,
     review_decision: str | None = None,
     review_requests_total: int = 0,
+    labels: list[str] | None = None,
     last_commit_at: str = "2026-04-07T20:00:00Z",
     reviews: list[dict[str, Any]] | None = None,
     review_threads: list[dict[str, Any]] | None = None,
@@ -43,6 +44,7 @@ def make_open_authored_hydrated_pr(
         "author": {"login": gh_user},
         "reviewDecision": review_decision,
         "reviewRequests": {"totalCount": review_requests_total},
+        "labels": {"nodes": [{"name": label} for label in (labels or [])]},
         "commits": {"nodes": [{"commit": {"committedDate": last_commit_at}}]},
         "reviews": {"nodes": reviews or []},
         "reviewThreads": {"nodes": review_threads or []},
@@ -83,6 +85,7 @@ def make_open_issue_hydrated(
     number: int,
     title: str,
     state: str = "OPEN",
+    labels: list[str] | None = None,
     timeline_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -92,6 +95,7 @@ def make_open_issue_hydrated(
         "url": url,
         "repository": {"nameWithOwner": repo_full},
         "state": state,
+        "labels": {"nodes": [{"name": label} for label in (labels or [])]},
         "timelineItems": {"nodes": timeline_items or []},
     }
 
@@ -117,6 +121,8 @@ def install_repo_planner_mocks(
     review_verify_complete: bool = True,
     notifications: list[dict[str, Any]] | None = None,
     expected_repos: list[str] | None = None,
+    archived_repos: set[str] | None = None,
+    archive_states_complete: bool = True,
 ) -> None:
     authored_prs = authored_prs or []
     issues = issues or []
@@ -125,6 +131,7 @@ def install_repo_planner_mocks(
     verified_issues = verified_issues or []
     verified_review_prs = verified_review_prs or []
     notifications = notifications or []
+    archived_repos = archived_repos or set()
 
     from agendum import gh
 
@@ -174,6 +181,11 @@ def install_repo_planner_mocks(
         assert gh_user_value == gh_user
         return notifications
 
+    async def fake_fetch_repo_archive_states_with_completeness(repos, *, batch_size=20):
+        if expected_repos is not None:
+            assert repos == expected_repos
+        return {repo: repo in archived_repos for repo in repos}, archive_states_complete
+
     monkeypatch.setattr(gh, "get_gh_username", fake_get_gh_username)
     monkeypatch.setattr(
         gh,
@@ -219,5 +231,10 @@ def install_repo_planner_mocks(
         gh,
         "verify_missing_review_prs_with_completeness",
         fake_verify_missing_review_prs_with_completeness,
+    )
+    monkeypatch.setattr(
+        gh,
+        "fetch_repo_archive_states_with_completeness",
+        fake_fetch_repo_archive_states_with_completeness,
     )
     monkeypatch.setattr(gh, "fetch_notifications", fake_fetch_notifications)

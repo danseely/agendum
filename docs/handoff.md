@@ -2,7 +2,7 @@
 
 ## Current objective
 
-Advance issue `#51` from the benchmarked phase-6 switch to PR review readiness with corrected benchmark attribution and up-to-date project memory.
+Advance issue `#51` from the benchmarked phase-6 switch to a renewed review pass now that phase-6 semantic parity has been restored.
 
 ## Branch
 
@@ -59,6 +59,15 @@ Advance issue `#51` from the benchmarked phase-6 switch to PR review readiness w
 - Reran `uv run python scripts/compare_live_sync_bench.py /tmp/agendum-live-sync-bench-baseline.json /tmp/agendum-live-sync-bench-pr52-phase6.json` and confirmed the same hot-path win with corrected lane attribution.
 - Updated PR `#52` title/body so the visible status now says the hot-path switch is complete and benchmarked.
 - Added a superseding PR `#52` benchmark comment with the corrected lane attribution and current comparison numbers.
+- Pushed the full local phase-6 branch state to `origin/codex/issue-51-sync-foundation` in commit `e08115f`.
+- Ran an independent review pass on `pr 52` and verified the reported regressions against the current code.
+- Restored planner-path fetched-scope parity for authored and issue rows in `src/agendum/syncer.py` by deriving planner active repos, filtering missing verification to that scope, and passing planner fetched scope into `diff_tasks()`.
+- Added `test_run_sync_org_path_preserves_out_of_scope_authored_tasks()` in `tests/test_syncer_edge_cases.py`.
+- Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the scope fix.
+- Restored planner-path label-to-`tags` propagation for authored PRs and issues by adding `labels` back to the authored/issue hydration shapes in `src/agendum/gh.py` and serializing them in `src/agendum/syncer.py`.
+- Restored planner-path archived-repo suppression by filtering org-backed hydrated items on `repository.isArchived` and batching explicit-repo archive-state lookup with `fetch_repo_archive_states_with_completeness()` in `src/agendum/gh.py`.
+- Added regression coverage for label parity and archived-repo suppression in `tests/test_gh.py` and `tests/test_syncer_edge_cases.py`.
+- Reran `uv run pytest tests/test_live_sync_bench.py tests/test_gh.py tests/test_gh_edge_cases.py tests/test_syncer.py tests/test_syncer_edge_cases.py` after the label/archive fixes.
 
 ## Validation
 
@@ -152,12 +161,12 @@ Advance issue `#51` from the benchmarked phase-6 switch to PR review readiness w
 
 ## Next actions
 
-1. Carry the `mulligan#1` note forward as the only observed semantic delta versus `main`.
-2. Move PR `#52` toward review from the current benchmarked branch state.
-3. Reuse the live benchmark harness for the next sync-affecting PR.
+1. Re-run the review pass against the realigned phase-6 branch.
+2. Decide whether to rerun the live benchmark after the parity fixes and restage the PR summary if needed.
+3. If review stays clean, move PR `#52` back toward review readiness.
 
 ## Drift from original plan
 
-- No implementation drift from the issue-51 plan remains in code.
+- The previously identified phase-6 semantic drift has been resolved in code and regression coverage.
 - Planning memory was missing from the repo and has now been added.
 - The repo memory had stale “checkpoint PR” language after PR `#52` was opened; `docs/plan.md`, `docs/status.md`, and `docs/handoff.md` now point at the active post-phase-4 state instead.

@@ -246,6 +246,7 @@ def _normalize_open_authored_task(item: dict[str, Any], *, gh_user: str) -> Norm
         review_threads=item.get("reviewThreads", {}).get("nodes", []),
     )
     repo_full = item["repository"]["nameWithOwner"]
+    labels = [label["name"] for label in (item.get("labels", {}).get("nodes", []))]
     return NormalizedIncomingTask(
         title=item.get("title", ""),
         source="pr_authored",
@@ -255,6 +256,7 @@ def _normalize_open_authored_task(item: dict[str, Any], *, gh_user: str) -> Norm
         gh_url=item.get("url"),
         gh_node_id=item.get("gh_node_id"),
         gh_number=item.get("number"),
+        tags=json.dumps(labels) if labels else None,
     )
 
 
@@ -265,6 +267,7 @@ def _normalize_open_issue_task(item: dict[str, Any]) -> NormalizedIncomingTask:
         for node in timeline
     )
     repo_full = item["repository"]["nameWithOwner"]
+    labels = [label["name"] for label in (item.get("labels", {}).get("nodes", []))]
     return NormalizedIncomingTask(
         title=item.get("title", ""),
         source="issue",
@@ -277,6 +280,7 @@ def _normalize_open_issue_task(item: dict[str, Any]) -> NormalizedIncomingTask:
         gh_url=item.get("url"),
         gh_node_id=item.get("gh_node_id"),
         gh_number=item.get("number"),
+        tags=json.dumps(labels) if labels else None,
     )
 
 
@@ -686,6 +690,54 @@ def _task_is_in_scope(task: dict[str, Any], *, excluded_repos: set[str]) -> bool
     return True
 
 
+def _task_repo_for_scope(task: dict[str, Any]) -> str | None:
+    repo_full = task.get("gh_repo")
+    if repo_full:
+        return repo_full
+    parsed = gh._parse_github_task_url(task.get("gh_url"))
+    if parsed is None:
+        return None
+    owner, name, _, _ = parsed
+    return f"{owner}/{name}"
+
+
+def _planner_active_repos(
+    *,
+    scoped_repos: list[str],
+    authored_hydrated: list[dict[str, Any]],
+    issues_hydrated: list[dict[str, Any]],
+    review_hydrated: list[dict[str, Any]],
+) -> set[str]:
+    if scoped_repos:
+        return set(scoped_repos)
+
+    active_repos: set[str] = set()
+    for items in (authored_hydrated, issues_hydrated, review_hydrated):
+        for item in items:
+            repo_full = ((item.get("repository") or {}).get("nameWithOwner") or "")
+            if repo_full:
+                active_repos.add(repo_full)
+    return active_repos
+
+
+def _task_is_verifiable_in_planner_scope(
+    task: dict[str, Any],
+    *,
+    active_repos: set[str],
+) -> bool:
+    source = task.get("source")
+    if source == "pr_review":
+        return True
+    if source in {"pr_authored", "issue"}:
+        task_repo = _task_repo_for_scope(task)
+        return bool(task_repo) and task_repo in active_repos
+    return False
+
+
+def _repo_is_archived(item: dict[str, Any]) -> bool:
+    return bool((item.get("repository") or {}).get("isArchived", False))
+
+
 async def _run_sync_once_planner(
     db_path: Path,
     config: AgendumConfig,
@@ -735,6 +787,28 @@ async def _run_sync_once_planner(
     authored_discovered = [item for item in authored_discovered if _keep(item)]
     issues_discovered = [item for item in issues_discovered if _keep(item)]
     review_discovered = [item for item in review_discovered if _keep(item)]
+    if scoped_repos:
+        repo_archive_states, _ = await gh.fetch_repo_archive_states_with_completeness(scoped_repos)
+        scoped_repos = [
+            repo
+            for repo in scoped_repos
+            if repo_archive_states.get(repo) is False
+        ]
+        authored_discovered = [
+            item
+            for item in authored_discovered
+            if ((item.get("repository") or {}).get("nameWithOwner") or "") in scoped_repos
+        ]
+        issues_discovered = [
+            item
+            for item in issues_discovered
+            if ((item.get("repository") or {}).get("nameWithOwner") or "") in scoped_repos
+        ]
+        review_discovered = [
+            item
+            for item in review_discovered
+            if ((item.get("repository") or {}).get("nameWithOwner") or "") in scoped_repos
+        ]
 
     hydrated = await asyncio.gather(
         gh.hydrate_open_authored_prs_with_completeness(authored_discovered),
@@ -748,6 +822,15 @@ async def _run_sync_once_planner(
         review_hydrated,
         review_hydrate_complete,
     ) = hydrated
+    authored_hydrated = [item for item in authored_hydrated if not _repo_is_archived(item)]
+    issues_hydrated = [item for item in issues_hydrated if not _repo_is_archived(item)]
+    review_hydrated = [item for item in review_hydrated if not _repo_is_archived(item)]
+    active_repos = _planner_active_repos(
+        scoped_repos=scoped_repos,
+        authored_hydrated=authored_hydrated,
+        issues_hydrated=issues_hydrated,
+        review_hydrated=review_hydrated,
+    )
 
     coverage = OpenDiscoveryCoverage(
         authored_complete=authored_search_complete and authored_hydrate_complete,
@@ -760,8 +843,14 @@ async def _run_sync_once_planner(
         review_prs=review_hydrated,
     )
 
+    existing_for_plan = [
+        task
+        for task in existing
+        if _task_is_verifiable_in_planner_scope(task, active_repos=active_repos)
+    ]
+
     initial_plan = build_sync_plan(
-        existing,
+        existing_for_plan,
         open_hydration,
         gh_user=gh_user,
         coverage=coverage,
@@ -789,7 +878,7 @@ async def _run_sync_once_planner(
     ) = verified
 
     final_plan = build_sync_plan(
-        existing,
+        existing_for_plan,
         open_hydration,
         gh_user=gh_user,
         coverage=coverage,
@@ -806,6 +895,7 @@ async def _run_sync_once_planner(
     diff = diff_tasks(
         existing,
         [item.as_dict() for item in final_plan.normalized_incoming_tasks],
+        fetched_repos=active_repos,
         close_suppression=final_plan.close_suppression,
     )
     changes, attention = _apply_sync_diff(db_path, diff)
